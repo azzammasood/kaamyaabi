@@ -407,9 +407,9 @@ Company: ${job.employer}
 Salary ask: ${targetSalary > 0 ? salaryAsk : "Ask employer first"}`,
       offer: `Employer ko yeh short message bhejein:
 
-${applicationMessage}
+${fenced(applicationMessage)}
 
-Apply/message ke baad DONE reply karein. Agar site extra sawaal pooche, yahan copy kar dein.`,
+Apply/message ke baad DONE tap karein. Agar site extra sawaal pooche, yahan copy kar dein.`,
     };
   }
 
@@ -426,9 +426,9 @@ Company: ${job.employer}
 Salary ask: ${targetSalary > 0 ? salaryAsk : "Lomray employer na salary tapos ka"}`,
       offer: `Employer ta da short message rawalega:
 
-${applicationMessage}
+${fenced(applicationMessage)}
 
-Apply/message na pas DONE reply oka. Ka site extra pokhtane okri, hagha dalta copy ka.`,
+Apply/message na pas DONE tap oka. Ka site extra pokhtane okri, hagha dalta copy ka.`,
     };
   }
 
@@ -444,10 +444,14 @@ Company: ${job.employer}
 Salary ask: ${targetSalary > 0 ? salaryAsk : "Ask employer first"}`,
     offer: `Send this short message to the employer:
 
-${applicationMessage}
+${fenced(applicationMessage)}
 
-After you submit or message the employer, reply DONE. If the site asks extra questions, copy them here.`,
+After you submit or message the employer, tap DONE. If the site asks extra questions, copy them here.`,
   };
+}
+
+function fenced(value: string) {
+  return "```" + "\n" + value + "\n" + "```";
 }
 
 export async function startJobApplication(
@@ -1173,31 +1177,31 @@ function splitPathSteps(step: string) {
 function formatPathStep(step: string) {
   switch (step) {
     case "auto-apply provider not configured":
-      return "Auto-apply provider checked: not configured yet";
+      return "Auto-apply provider: `not configured yet`";
     case "auto-apply provider tried":
-      return "Auto-apply provider tried first";
+      return "Auto-apply provider: `tried first`";
     case "auto-apply provider missing candidate profile id":
-      return "Auto-apply provider checked: candidate profile missing";
+      return "Auto-apply provider: `candidate profile missing`";
     case "platform api not configured":
-      return "Platform API checked: no connected account/API yet";
+      return "Platform API: `no connected account/API yet`";
     case "direct apply post not safe":
-      return "Direct form POST checked: no safe submit endpoint found";
+      return "Direct form POST: `no safe submit endpoint found`";
     case "direct phone/email checked":
-      return "Direct employer contact checked: not listed on this job";
+      return "Direct employer contact: `not listed on this job`";
     case "official listing apply route available":
-      return "Official listing/apply page found";
+      return "Official listing/apply page: `found`";
     case "no direct contact found":
-      return "Direct phone/email checked: not found";
+      return "Direct phone/email: `not found`";
     case "company contact discovery returned no usable contact":
-      return "Company contact search checked: no usable contact";
+      return "Company contact search: `no usable contact`";
     case "auto-apply failed":
-      return "Auto-apply tried but failed";
+      return "Auto-apply: `tried but failed`";
     case "demo fallback":
-      return "Demo fallback listing checked";
+      return "Demo fallback listing: `checked`";
     case "company contact discovery failed":
-      return "Company contact search failed";
+      return "Company contact search: `failed`";
     case "manual handoff required":
-      return "Manual handoff prepared as last fallback";
+      return "Manual handoff: `prepared as last fallback`";
     default:
       return step;
   }

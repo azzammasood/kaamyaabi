@@ -144,7 +144,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     return [editProfileMessage(language)];
   }
 
-  if (["done", "submitted"].includes(normalized) && session.stage === "application_ready") {
+  if (isApplicationDoneCommand(normalized) && session.stage === "application_ready") {
     if (session.selectedJob) {
       session.applications = [
         ...(session.applications ?? []),
@@ -161,6 +161,13 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     sessions.set(message.from, session);
 
     return [submittedMessage(language), watchSuggestionReply(language)];
+  }
+
+  if (isSaveApplicationCommand(normalized) && session.stage === "application_ready") {
+    session.stage = "jobs_shown";
+    sessions.set(message.from, session);
+
+    return [savedForLaterMessage(language)];
   }
 
   if (isWatchYesCommand(normalized) && session.profile && session.stage === "applied") {
@@ -427,6 +434,9 @@ function isKnownShortCommand(normalized: string) {
     "confirm",
     "done",
     "submitted",
+    "application_done",
+    "save_later",
+    "save for later",
     "jobs",
     "find jobs",
     "job listings",
@@ -497,6 +507,14 @@ function isProfileYesCommand(normalized: string) {
 
 function isProfileNoCommand(normalized: string) {
   return ["no", "n", "edit", "profile_no"].includes(normalized);
+}
+
+function isApplicationDoneCommand(normalized: string) {
+  return ["done", "submitted", "application_done"].includes(normalized);
+}
+
+function isSaveApplicationCommand(normalized: string) {
+  return ["save_later", "save later", "save for later", "draft"].includes(normalized);
 }
 
 function isWatchYesCommand(normalized: string) {
@@ -920,6 +938,24 @@ async function beginApplication(
     sessions.set(phone, session);
   }
 
+  if (application.status === "needs_manual_submit") {
+    const replies: AgentReply[] = application.messages.slice(0, -1);
+    const handoff = application.messages.at(-1);
+
+    if (handoff) {
+      replies.push({
+        kind: "buttons",
+        body: handoff,
+        buttons: [
+          { id: "APPLICATION_DONE", title: "Done" },
+          { id: "SAVE_LATER", title: "Save Later" },
+        ],
+      });
+    }
+
+    return replies;
+  }
+
   return application.messages;
 }
 
@@ -1088,10 +1124,10 @@ function buildJobListingReplies(
   ];
   const intro =
     language === "urdu"
-      ? `Mujhe ${jobs.length} job matches mile (${sourceLabel}). Har job alag message mein hai. Approve ya Reject tap karein.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`
+      ? `${jobs.length} jobs mil gayi.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : `Source: ${sourceLabel}`}`
       : language === "pashto"
-        ? `Ma ${jobs.length} job matches paida kre (${sourceLabel}). Har job alag message ke da. Approve ya Reject tap oka.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`
-        : `I found ${jobs.length} job matches (${sourceLabel}). Each job is in its own message. Tap Approve or Reject.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`;
+        ? `${jobs.length} jobs paida shwe.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : `Source: ${sourceLabel}`}`
+        : `${jobs.length} jobs found.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : `Source: ${sourceLabel}`}`;
 
   return [
     intro.trim(),
@@ -1149,11 +1185,22 @@ function editProfileMessage(language: LanguageCode) {
 function submittedMessage(language: LanguageCode) {
   switch (language) {
     case "urdu":
-      return "Application submitted mark ho gayi.\n\nAgar employer reply kare ya sawaal pooche, unka message yahan paste karein. Main jawab banwa dunga.";
+      return "Shukriya for using Kaamyaabi.\n\nApplication submitted mark ho gayi. Agar employer reply kare ya sawaal pooche, unka message yahan paste karein.";
     case "pashto":
-      return "Application submitted mark shwa.\n\nKa employer reply oko ya pokhtana oko, hagha message darta rawalega. Za ba jawab jor kam.";
+      return "Kaamyaabi karawalo la manana.\n\nApplication submitted mark shwa. Ka employer reply oko ya pokhtana oko, hagha message darta rawalega.";
     default:
-      return "Application marked submitted.\n\nIf the employer replies or asks questions, paste their message here and I will help you respond.";
+      return "Thank you for using Kaamyaabi.\n\nApplication marked submitted. If the employer replies or asks questions, paste their message here.";
+  }
+}
+
+function savedForLaterMessage(language: LanguageCode) {
+  switch (language) {
+    case "urdu":
+      return "Saved in drafts for later.\n\nDemo note: yeh mock draft save hai. Aap JOBS bhej kar list dobara dekh sakte hain.";
+    case "pashto":
+      return "Later la drafts ke save sho.\n\nDemo note: da mock draft save da. JOBS rawalega che list bia ogore.";
+    default:
+      return "Saved in drafts for later.\n\nDemo note: this is a mock draft save. Send JOBS when you want to continue.";
   }
 }
 
