@@ -69,6 +69,8 @@ const applicationStatus = {
   contactDiscoveryFailures: 0,
   emailSendCalls: 0,
   emailSendFailures: 0,
+  mockContactDiscoveries: 0,
+  mockEmailSends: 0,
   manualHandoffs: 0,
   lastProvider: "manual" as ApplicationResult["provider"],
   lastStatus: "needs_manual_submit" as ApplicationResult["status"],
@@ -587,7 +589,7 @@ async function discoverEmployerContact(
   const apiKey = process.env.EXA_API_KEY;
 
   if (!apiKey || job.source === "demo") {
-    return undefined;
+    return mockEmployerContact(job, profile, "no live contact discovery available");
   }
 
   applicationStatus.contactDiscoveryCalls += 1;
@@ -642,7 +644,7 @@ async function discoverEmployerContact(
       error instanceof Error ? error.message : "Unknown contact discovery error";
   }
 
-  return undefined;
+  return mockEmployerContact(job, profile, "no usable live contact found");
 }
 
 function parseEmployerContact(
@@ -741,6 +743,16 @@ async function sendEmailIfConfigured(input: {
   const from = process.env.APPLICATION_EMAIL_FROM;
 
   if (!apiKey || !from) {
+    if (process.env.MOCK_EMAIL_SEND !== "false") {
+      applicationStatus.emailSendCalls += 1;
+      applicationStatus.mockEmailSends += 1;
+
+      return {
+        id: `mock_email_${Date.now()}`,
+        sent: true as const,
+      };
+    }
+
     return { sent: false as const };
   }
 
@@ -774,6 +786,37 @@ async function sendEmailIfConfigured(input: {
       error instanceof Error ? error.message : "Unknown email send error";
     return { sent: false as const };
   }
+}
+
+function mockEmployerContact(
+  job: JobListing,
+  profile: WorkerProfile,
+  reason: string,
+): EmployerContact | undefined {
+  if (process.env.MOCK_CONTACT_DISCOVERY === "false") {
+    return undefined;
+  }
+
+  applicationStatus.mockContactDiscoveries += 1;
+  applicationStatus.lastFallbackPath = `mock company contact discovery: ${reason}`;
+
+  const employerSlug = (job.employer || "employer")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 32);
+  const roleSlug = profile.role
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ".")
+    .replace(/^\.+|\.+$/g, "")
+    .slice(0, 24);
+
+  return {
+    email: `hiring.${roleSlug || "worker"}@${employerSlug || "employer"}.demo.test`,
+    phone: "+92 300 555 0101",
+    sourceLabel: "Mock company contact discovery",
+    sourceUrl: job.url,
+  };
 }
 
 function buildEmailApplicationBody(input: {

@@ -261,6 +261,8 @@ export async function runWatchChecks(
   const watchedSessions = Array.from(sessions.entries()).filter(
     ([, session]) => session.watchMode && session.profile,
   );
+  let alertsSent = 0;
+  let applicationsStarted = 0;
 
   for (const [phone, session] of watchedSessions) {
     if (!session.profile || !session.watchMode) {
@@ -286,6 +288,7 @@ export async function runWatchChecks(
     sessions.set(phone, session);
 
     await sendMessage(phone, watchAlertMessage(language, topJob, session.profile));
+    alertsSent += 1;
 
     if (session.watchMode.autoApply) {
       const applicationMessages = await beginApplication(phone, session, "APPLY 1");
@@ -293,8 +296,16 @@ export async function runWatchChecks(
       for (const reply of applicationMessages) {
         await sendMessage(phone, reply);
       }
+
+      applicationsStarted += 1;
     }
   }
+
+  return {
+    alertsSent,
+    applicationsStarted,
+    checkedSessions: watchedSessions.length,
+  };
 }
 
 function isKnownShortCommand(normalized: string) {
@@ -615,8 +626,10 @@ BoringProject calls: ${applyStatus.boringProjectCalls}
 BoringProject failures: ${applyStatus.boringProjectFailures}
 Contact discovery calls: ${applyStatus.contactDiscoveryCalls}
 Contact discovery failures: ${applyStatus.contactDiscoveryFailures}
+Mock contact discoveries: ${applyStatus.mockContactDiscoveries}
 Email send calls: ${applyStatus.emailSendCalls}
 Email send failures: ${applyStatus.emailSendFailures}
+Mock email sends: ${applyStatus.mockEmailSends}
 Manual handoffs: ${applyStatus.manualHandoffs}
 Last application provider: ${applyStatus.lastProvider}
 Last application status: ${applyStatus.lastStatus}
