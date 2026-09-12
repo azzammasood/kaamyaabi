@@ -1,4 +1,5 @@
 import type { WorkerProfile } from "@/lib/ai";
+import type { LanguageCode } from "@/lib/language";
 
 export type JobListing = {
   id: string;
@@ -29,6 +30,10 @@ export type ApplicationResult = {
   provider: "boringproject" | "manual";
   status: "queued" | "needs_manual_submit" | "failed";
   externalSessionId?: string;
+};
+
+type JobSearchOptions = {
+  preferDirectContact?: boolean;
 };
 
 export type JobSearchStatus = {
@@ -238,9 +243,12 @@ type ExaSearchResponse = {
   };
 };
 
-export async function findJobsForProfile(profile: WorkerProfile) {
+export async function findJobsForProfile(
+  profile: WorkerProfile,
+  options: JobSearchOptions = {},
+) {
   try {
-    const liveJobs = await findLiveJobs(profile);
+    const liveJobs = await findLiveJobs(profile, options);
 
     if (liveJobs.length > 0) {
       jobSearchStatus.provider = "exa";
@@ -265,7 +273,11 @@ export function getApplicationStatus() {
   return applicationStatus;
 }
 
-export function formatJobList(jobs: JobListing[], profile: WorkerProfile) {
+export function formatJobList(
+  jobs: JobListing[],
+  profile: WorkerProfile,
+  language: LanguageCode = "english",
+) {
   const sourceLabel = jobs.some((job) => job.source === "live")
     ? "multi-source live search"
     : "demo fallback";
@@ -273,10 +285,32 @@ export function formatJobList(jobs: JobListing[], profile: WorkerProfile) {
     ...new Set(jobs.filter((job) => job.source === "live").map((job) => job.sourceLabel)),
   ];
 
+  if (language === "urdu") {
+    return `Mujhe ${jobs.length} job matches mile (${sourceLabel}).
+${liveSources.length > 0 ? `Sources used: ${liveSources.join(", ")}.\n` : ""}
+
+${jobs.map((job, index) => formatJobCard(job, index + 1, language)).join("\n\n")}
+
+Recommended: pehle #1 par apply karein. Salary ask: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}+.
+
+Reply APPLY 1, APPLY 2, ya APPLY 3.`;
+  }
+
+  if (language === "pashto") {
+    return `Ma ${jobs.length} job matches paida kre (${sourceLabel}).
+${liveSources.length > 0 ? `Sources used: ${liveSources.join(", ")}.\n` : ""}
+
+${jobs.map((job, index) => formatJobCard(job, index + 1, language)).join("\n\n")}
+
+Recommended: lomray #1 apply oka. Salary ask: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}+.
+
+Reply APPLY 1, APPLY 2, ya APPLY 3.`;
+  }
+
   return `I found ${jobs.length} job matches (${sourceLabel}).
 ${liveSources.length > 0 ? `Sources used: ${liveSources.join(", ")}.\n` : ""}
 
-${jobs.map((job, index) => formatJobCard(job, index + 1)).join("\n\n")}
+${jobs.map((job, index) => formatJobCard(job, index + 1, language)).join("\n\n")}
 
 Recommended: apply to #1 first. Salary ask: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}+.
 
@@ -293,15 +327,28 @@ export function getJobBySelection(jobs: JobListing[] | undefined, text: string) 
   return jobs[index] ?? jobs[0];
 }
 
-export function formatApplicationSummary(job: JobListing, profile: WorkerProfile) {
+export function formatApplicationSummary(
+  job: JobListing,
+  profile: WorkerProfile,
+  language: LanguageCode = "english",
+) {
   const targetSalary = Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0);
   const salaryAsk = `PKR ${targetSalary.toLocaleString("en-PK")}`;
-  const applicationMessage = buildApplicationMessage(job, profile, salaryAsk);
+  const applicationMessage = buildApplicationMessage(job, profile, salaryAsk, language);
 
   if (job.applicationMethod === "unavailable") {
     return {
       targetSalary,
-      started: `This match is a demo fallback, not a real external listing.
+      started:
+        language === "urdu"
+          ? `Yeh demo fallback match hai, real external listing nahi.
+
+Main is par fake apply nahi karunga. JOBS dobara bhejein aur live listing choose karein.`
+          : language === "pashto"
+            ? `Da demo fallback match da, real external listing na da.
+
+Za fake apply na kawom. JOBS bia rawalega aw live listing choose oka.`
+            : `This match is a demo fallback, not a real external listing.
 
 I will not pretend to apply to it. Send JOBS again and choose a live listing with APPLY 1, APPLY 2, or APPLY 3.`,
       offer: "",
@@ -313,11 +360,63 @@ I will not pretend to apply to it. Send JOBS again and choose a live listing wit
       ? `Contact/apply here: ${job.contactHint}`
       : `Open the real ${job.sourceLabel} application page: ${job.url}`;
 
+  if (language === "urdu") {
+    return {
+      targetSalary,
+      started: `Real application packet tayyar
+
+${formatJobCard(job, 1, language)}
+
+Worker CV:
+${profile.name} - ${profile.role}
+${profile.experienceYears} years experience
+Skills: ${profile.skills.join(", ")}
+Location: ${profile.location}
+Available: ${profile.availability}
+Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
+
+${actionLine}`,
+      offer: `Yeh message employer/listing par send/apply karein:
+
+${applicationMessage}
+
+Apply ya message bhejne ke baad DONE reply karein.
+
+Agar site extra sawaal pooche, yahan copy kar dein.`,
+    };
+  }
+
+  if (language === "pashto") {
+    return {
+      targetSalary,
+      started: `Real application packet tayyar da
+
+${formatJobCard(job, 1, language)}
+
+Worker CV:
+${profile.name} - ${profile.role}
+${profile.experienceYears} years experience
+Skills: ${profile.skills.join(", ")}
+Location: ${profile.location}
+Available: ${profile.availability}
+Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
+
+${actionLine}`,
+      offer: `Da message employer/listing ta send/apply oka:
+
+${applicationMessage}
+
+Apply ya message na pas DONE reply oka.
+
+Ka site extra pokhtane okri, hagha dalta copy ka.`,
+    };
+  }
+
   return {
     targetSalary,
     started: `Real application packet ready
 
-${formatJobCard(job, 1)}
+${formatJobCard(job, 1, language)}
 
 Worker CV:
 ${profile.name} - ${profile.role}
@@ -341,13 +440,14 @@ If the site asks extra questions, copy them here and I will help answer.`,
 export async function startJobApplication(
   job: JobListing,
   profile: WorkerProfile,
+  language: LanguageCode = "english",
 ): Promise<ApplicationResult> {
   if (job.applicationMethod === "unavailable") {
     applicationStatus.manualHandoffs += 1;
     applicationStatus.lastProvider = "manual";
     applicationStatus.lastStatus = "needs_manual_submit";
 
-    const application = formatApplicationSummary(job, profile);
+    const application = formatApplicationSummary(job, profile, language);
     return {
       messages: [application.started, application.offer].filter(Boolean),
       provider: "manual",
@@ -363,6 +463,7 @@ export async function startJobApplication(
       apiKey: boringProjectKey,
       candidateProfileId,
       job,
+      language,
       profile,
     });
 
@@ -375,13 +476,13 @@ export async function startJobApplication(
   applicationStatus.lastProvider = "manual";
   applicationStatus.lastStatus = "needs_manual_submit";
 
-  const application = formatApplicationSummary(job, profile);
+  const application = formatApplicationSummary(job, profile, language);
 
   return {
     messages: [
       boringProjectKey && !candidateProfileId
-        ? "Auto-apply provider is configured, but BORING_PROJECT_CANDIDATE_PROFILE_ID is missing."
-        : "Auto-apply provider is not configured yet, so I prepared the reliable application handoff.",
+        ? autoApplyMissingCandidateMessage(language)
+        : autoApplyNotConfiguredMessage(language),
       application.started,
       application.offer,
     ].filter(Boolean),
@@ -394,6 +495,7 @@ async function submitWithBoringProject(input: {
   apiKey: string;
   candidateProfileId: string;
   job: JobListing;
+  language: LanguageCode;
   profile: WorkerProfile;
 }): Promise<ApplicationResult> {
   applicationStatus.boringProjectCalls += 1;
@@ -469,7 +571,11 @@ I will treat the webhook result as final: submitted, needs input, or failed.`,
     applicationStatus.lastError =
       error instanceof Error ? error.message : "Unknown BoringProject error";
 
-    const application = formatApplicationSummary(input.job, input.profile);
+    const application = formatApplicationSummary(
+      input.job,
+      input.profile,
+      input.language,
+    );
     return {
       messages: [
         `Auto-apply failed, so I prepared the manual application packet instead.
@@ -488,7 +594,36 @@ function buildApplicationMessage(
   job: JobListing,
   profile: WorkerProfile,
   salaryAsk: string,
+  language: LanguageCode,
 ) {
+  if (language === "urdu") {
+    return `Assalamualaikum, main ${job.title} ke liye apply kar raha hoon.
+
+Name: ${profile.name}
+Role: ${profile.role}
+Experience: ${profile.experienceYears} years
+Area: ${profile.location}
+Skills: ${profile.skills.join(", ")}
+Availability: ${profile.availability}
+Expected salary: ${salaryAsk}
+
+Main is job mein interested hoon aur details discuss kar sakta hoon.`;
+  }
+
+  if (language === "pashto") {
+    return `Assalamualaikum, za da ${job.title} la para apply kawom.
+
+Name: ${profile.name}
+Role: ${profile.role}
+Experience: ${profile.experienceYears} years
+Area: ${profile.location}
+Skills: ${profile.skills.join(", ")}
+Availability: ${profile.availability}
+Expected salary: ${salaryAsk}
+
+Za de job ke interested yam aw details discuss kawalay sham.`;
+  }
+
   return `Assalamualaikum, I am applying for ${job.title}.
 
 Name: ${profile.name}
@@ -502,7 +637,11 @@ Expected salary: ${salaryAsk}
 I am interested in this job and available to discuss details.`;
 }
 
-function formatJobCard(job: JobListing, index: number) {
+function formatJobCard(
+  job: JobListing,
+  index: number,
+  language: LanguageCode = "english",
+) {
   const locationLabel = job.locationVerified
     ? job.location
     : `${job.location} (verify on listing)`;
@@ -513,6 +652,34 @@ function formatJobCard(job: JobListing, index: number) {
       : job.applicationMethod !== "unavailable" && job.url
         ? `\nApply route: ${formatApplicationMethod(job.applicationMethod)}`
         : "\nApplication route: not available for this demo fallback";
+
+  if (language === "urdu") {
+    return `*${index}. ${job.title}*
+${job.employer} | ${locationLabel}
+
+Salary: ${formatSalary(job.salaryPkr)}
+Match: ${job.match}%
+Source: ${job.sourceLabel}
+Reliability: ${job.reliability}
+
+${job.summary}${applyLine}
+
+Fit: ${job.why.join("; ")}${linkLine}`;
+  }
+
+  if (language === "pashto") {
+    return `*${index}. ${job.title}*
+${job.employer} | ${locationLabel}
+
+Salary: ${formatSalary(job.salaryPkr)}
+Match: ${job.match}%
+Source: ${job.sourceLabel}
+Reliability: ${job.reliability}
+
+${job.summary}${applyLine}
+
+Fit: ${job.why.join("; ")}${linkLine}`;
+  }
 
   return `*${index}. ${job.title}*
 ${job.employer} | ${locationLabel}
@@ -546,7 +713,32 @@ function formatApplicationMethod(method: JobListing["applicationMethod"]) {
   }
 }
 
-async function findLiveJobs(profile: WorkerProfile): Promise<JobListing[]> {
+function autoApplyMissingCandidateMessage(language: LanguageCode) {
+  switch (language) {
+    case "urdu":
+      return "Auto-apply provider configured hai, lekin BORING_PROJECT_CANDIDATE_PROFILE_ID missing hai.";
+    case "pashto":
+      return "Auto-apply provider configured da, kho BORING_PROJECT_CANDIDATE_PROFILE_ID missing da.";
+    default:
+      return "Auto-apply provider is configured, but BORING_PROJECT_CANDIDATE_PROFILE_ID is missing.";
+  }
+}
+
+function autoApplyNotConfiguredMessage(language: LanguageCode) {
+  switch (language) {
+    case "urdu":
+      return "Auto-apply provider abhi configured nahi, is liye maine reliable application handoff tayyar kiya.";
+    case "pashto":
+      return "Auto-apply provider la configured na da, no ma reliable application handoff tayyar ko.";
+    default:
+      return "Auto-apply provider is not configured yet, so I prepared the reliable application handoff.";
+  }
+}
+
+async function findLiveJobs(
+  profile: WorkerProfile,
+  options: JobSearchOptions,
+): Promise<JobListing[]> {
   const apiKey = process.env.EXA_API_KEY;
 
   if (!apiKey) {
@@ -559,7 +751,9 @@ async function findLiveJobs(profile: WorkerProfile): Promise<JobListing[]> {
   jobSearchStatus.sourcesQueried = selectedSearchSources().map((source) => source.label);
 
   const results = await Promise.allSettled(
-    selectedSearchSources().map((source) => searchSource(profile, source, apiKey)),
+    selectedSearchSources().map((source) =>
+      searchSource(profile, source, apiKey, options),
+    ),
   );
 
   const jobs = results.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
@@ -573,17 +767,21 @@ async function findLiveJobs(profile: WorkerProfile): Promise<JobListing[]> {
   }
 
   jobSearchStatus.liveResultsSeen = jobs.length;
-  return dedupeAndRankJobs(jobs, profile).slice(0, 6);
+  return dedupeAndRankJobs(jobs, profile, options).slice(0, 6);
 }
 
 async function searchSource(
   profile: WorkerProfile,
   source: SearchSource,
   apiKey: string,
+  options: JobSearchOptions,
 ) {
   jobSearchStatus.liveCalls += 1;
 
-  const query = `${profile.role} job ${profile.location} Pakistan salary hiring apply ${source.querySuffix}`;
+  const directContactQuery = options.preferDirectContact
+    ? " phone WhatsApp contact number email direct hiring"
+    : "";
+  const query = `${profile.role} job ${profile.location} Pakistan salary hiring apply ${source.querySuffix}${directContactQuery}`;
   const body: Record<string, unknown> = {
     query,
     type: "auto",
@@ -694,7 +892,11 @@ function normalizeExaResult(
   };
 }
 
-function dedupeAndRankJobs(jobs: JobListing[], profile: WorkerProfile) {
+function dedupeAndRankJobs(
+  jobs: JobListing[],
+  profile: WorkerProfile,
+  options: JobSearchOptions,
+) {
   const seen = new Map<string, JobListing>();
 
   for (const job of jobs) {
@@ -714,7 +916,8 @@ function dedupeAndRankJobs(jobs: JobListing[], profile: WorkerProfile) {
       match: Math.min(
         98,
         job.match +
-          (job.locationVerified ? exactLocationBoost(job.location, profile.location) : 0),
+          (job.locationVerified ? exactLocationBoost(job.location, profile.location) : 0) +
+          (options.preferDirectContact && job.applicationMethod === "contact" ? 10 : 0),
       ),
     }))
     .sort((a, b) => b.match - a.match);

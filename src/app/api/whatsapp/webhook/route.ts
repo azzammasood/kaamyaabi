@@ -1,4 +1,4 @@
-import { handleWorkerMessage } from "@/lib/demo-agent";
+import { handleWorkerMessage, runWatchChecks } from "@/lib/demo-agent";
 import { transcribeAudio } from "@/lib/ai";
 import { downloadWhatsAppMedia } from "@/lib/whatsapp";
 
@@ -129,11 +129,6 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
   let transcript: string | undefined;
 
   if (message.type === "audio" && message.audioId) {
-    await sendWhatsAppText(
-      message.from,
-      "Voice note received. Transcribing and building your worker profile now.",
-    );
-
     try {
       const audio = await downloadWhatsAppMedia(message.audioId);
       transcript = await transcribeAudio({
@@ -193,4 +188,19 @@ async function sendWhatsAppText(to: string | undefined, body: string) {
       error,
     });
   }
+}
+
+const globalForWatch = globalThis as typeof globalThis & {
+  __kaamyaabiWatchStarted?: boolean;
+};
+
+if (!globalForWatch.__kaamyaabiWatchStarted && process.env.WATCH_ENABLED !== "false") {
+  globalForWatch.__kaamyaabiWatchStarted = true;
+  const intervalMs = Number(process.env.WATCH_INTERVAL_MS ?? 5 * 60 * 1000);
+
+  setInterval(() => {
+    runWatchChecks((phone, body) => sendWhatsAppText(phone, body)).catch((error) => {
+      console.error("Watch check failed", error);
+    });
+  }, Number.isFinite(intervalMs) && intervalMs >= 30_000 ? intervalMs : 5 * 60 * 1000);
 }

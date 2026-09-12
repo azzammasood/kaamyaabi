@@ -22,6 +22,39 @@ const geminiUsage = {
   deterministicFallbacks: 0,
 };
 
+const openRouterUsage = {
+  profileCalls: 0,
+  profileFailures: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+  totalTokens: 0,
+};
+
+const workerProfileJsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    role: { type: "string" },
+    location: { type: "string" },
+    experienceYears: { type: "integer" },
+    minimumSalaryPkr: { type: "integer" },
+    skills: { type: "array", items: { type: "string" } },
+    availability: { type: "string" },
+    languages: { type: "array", items: { type: "string" } },
+  },
+  required: [
+    "name",
+    "role",
+    "location",
+    "experienceYears",
+    "minimumSalaryPkr",
+    "skills",
+    "availability",
+    "languages",
+  ],
+  additionalProperties: false,
+};
+
 export async function transcribeAudio(input: {
   bytes: ArrayBuffer;
   mimeType: string;
@@ -60,6 +93,14 @@ export async function transcribeAudio(input: {
 }
 
 export async function extractWorkerProfile(transcript: string) {
+  if (shouldUseOpenRouter()) {
+    try {
+      return await extractProfileWithOpenRouter(transcript);
+    } catch (error) {
+      console.warn("OpenRouter profile extraction failed; falling back to Gemini", error);
+    }
+  }
+
   try {
     const response = await requestGemini(
       process.env.GEMINI_MODEL || "gemini-3.8-flash",
@@ -91,15 +132,36 @@ export async function extractWorkerProfile(transcript: string) {
 }
 
 export function getAiStatus() {
+  const openRouterModel =
+    process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-mini:free";
+  const openRouterFallbackModel =
+    process.env.OPENROUTER_FALLBACK_MODEL || "nex-agi/nex-n2.5-pro:free";
   const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
   const transcribeModel =
     process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
 
-  return "AI status since server start:\n\nProvider: Gemini only\nProfile model: " +
+  return "AI status since server start:\n\nProvider: " +
+    (shouldUseOpenRouter() ? "OpenRouter primary, Gemini fallback" : "Gemini only") +
+    "\nOpenRouter model: " +
+    openRouterModel +
+    "\nOpenRouter fallback: " +
+    openRouterFallbackModel +
+    "\nGemini profile fallback: " +
     model +
     "\nTranscription model: " +
     transcribeModel +
-    "\n\nTranscription calls: " +
+    "\n\nOpenRouter profile calls: " +
+    openRouterUsage.profileCalls +
+    "\nOpenRouter profile failures: " +
+    openRouterUsage.profileFailures +
+    "\nOpenRouter tokens seen: " +
+    openRouterUsage.totalTokens +
+    " total (" +
+    openRouterUsage.promptTokens +
+    " prompt, " +
+    openRouterUsage.completionTokens +
+    " completion)" +
+    "\n\nGemini transcription calls: " +
     geminiUsage.transcriptionCalls +
     "\nTranscription failures: " +
     geminiUsage.transcriptionFailures +
@@ -111,6 +173,93 @@ export function getAiStatus() {
     geminiUsage.profileRetries +
     "\nTranscript-only fallbacks: " +
     geminiUsage.deterministicFallbacks;
+}
+
+function shouldUseOpenRouter() {
+  return (
+    process.env.AI_PRIMARY_PROVIDER !== "gemini" &&
+    Boolean(process.env.OPENROUTER_API_KEY)
+  );
+}
+
+async function extractProfileWithOpenRouter(transcript: string) {
+  const apiKey = requireEnv("OPENROUTER_API_KEY");
+  const baseUrl = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+  const models = [
+    process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-mini:free",
+    process.env.OPENROUTER_FALLBACK_MODEL || "nex-agi/nex-n2.5-pro:free",
+  ];
+  let lastError: unknown;
+
+  for (const model of models) {
+    try {
+      return await requestOpenRouterProfile({ apiKey, baseUrl, model, transcript });
+    } catch (error) {
+      lastError = error;
+      console.warn("OpenRouter model failed", { model, error });
+    }
+  }
+
+  throw lastError ?? new Error("OpenRouter extraction failed");
+}
+
+async function requestOpenRouterProfile(input: {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  transcript: string;
+}) {
+  const response = await fetch(input.baseUrl + "/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + input.apiKey,
+      "Content-Type": "application/json",
+      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+      "X-Title": "Kaamyaabi",
+    },
+    body: JSON.stringify({
+      model: input.model,
+      temperature: 0.1,
+      max_tokens: 500,
+      provider: { require_parameters: true },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Extract a Pakistani informal worker profile from WhatsApp text or voice transcript. Preserve the user's spoken language in languages. Do not invent details. Missing text fields must be Not provided, missing numbers 0, missing lists [Not provided]. Return JSON only.",
+        },
+        { role: "user", content: input.transcript },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "worker_profile",
+          strict: true,
+          schema: workerProfileJsonSchema,
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    openRouterUsage.profileFailures += 1;
+    throw new Error("OpenRouter returned " + response.status);
+  }
+
+  const json = (await response.json()) as OpenRouterChatResponse;
+  const content = json.choices?.[0]?.message?.content;
+
+  if (!content) {
+    openRouterUsage.profileFailures += 1;
+    throw new Error("OpenRouter returned empty content");
+  }
+
+  openRouterUsage.profileCalls += 1;
+  openRouterUsage.promptTokens += json.usage?.prompt_tokens ?? 0;
+  openRouterUsage.completionTokens += json.usage?.completion_tokens ?? 0;
+  openRouterUsage.totalTokens += json.usage?.total_tokens ?? 0;
+
+  return parseProfileJson(content);
 }
 
 async function requestGemini(model: string, body: unknown) {
@@ -272,4 +421,17 @@ type GeminiGenerateContentResponse = {
   candidates?: Array<{
     content?: { parts?: Array<{ text?: string }> };
   }>;
+};
+
+type OpenRouterChatResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
 };
