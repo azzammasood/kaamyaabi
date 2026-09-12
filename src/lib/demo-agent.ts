@@ -1,8 +1,17 @@
 import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai";
+import {
+  findJobsForProfile,
+  formatApplicationSummary,
+  formatJobList,
+  getJobBySelection,
+  getJobSearchStatus,
+  type JobListing,
+} from "@/lib/jobs";
 
 type Session = {
+  jobs?: JobListing[];
   profile?: WorkerProfile;
-  selectedJobId?: string;
+  selectedJob?: JobListing;
   stage: "new" | "profile_review" | "jobs_shown" | "offer_made" | "confirmed";
 };
 
@@ -14,33 +23,6 @@ export type WorkerMessage = {
 };
 
 const sessions = new Map<string, Session>();
-
-const jobs = [
-  {
-    id: "family-driver-g10",
-    title: "Family Driver",
-    employer: "Khan Family",
-    location: "G-10 Islamabad",
-    salaryPkr: 38000,
-    match: 92,
-  },
-  {
-    id: "office-driver-f8",
-    title: "Office Driver",
-    employer: "Blue Area Office",
-    location: "F-8 Islamabad",
-    salaryPkr: 45000,
-    match: 81,
-  },
-  {
-    id: "delivery-driver-g11",
-    title: "Delivery Driver",
-    employer: "Local Delivery Co.",
-    location: "G-11 Islamabad",
-    salaryPkr: 35000,
-    match: 64,
-  },
-];
 
 export async function handleWorkerMessage(message: WorkerMessage) {
   const session = sessions.get(message.from) ?? { stage: "new" };
@@ -55,7 +37,22 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   }
 
   if (["status", "usage", "ai status"].includes(normalized)) {
-    return [getAiStatus()];
+    return [buildStatusMessage()];
+  }
+
+  if (["jobs", "find jobs", "job listings"].includes(normalized)) {
+    if (!session.profile) {
+      return [
+        "Please make your worker profile first. Send the work you want, experience, area, minimum salary, and availability.",
+      ];
+    }
+
+    const jobs = await findJobsForProfile(session.profile);
+    session.jobs = jobs;
+    session.stage = "jobs_shown";
+    sessions.set(message.from, session);
+
+    return [formatJobList(jobs, session.profile)];
   }
 
   if (["no", "n", "edit"].includes(normalized) && session.stage === "profile_review") {
@@ -69,11 +66,11 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     session.profile &&
     session.stage === "jobs_shown"
   ) {
-    return beginNegotiation(message.from, session);
+    return beginApplication(message.from, session, text);
   }
 
   if (normalized === "apply" && session.profile) {
-    return beginNegotiation(message.from, session);
+    return beginApplication(message.from, session, text);
   }
 
   if (normalized === "confirm" && session.stage === "offer_made") {
@@ -97,10 +94,11 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
-    return [
-      buildCvMessage(session.profile),
-      buildJobsMessage(session.profile),
-    ];
+    const jobs = await findJobsForProfile(session.profile);
+    session.jobs = jobs;
+    sessions.set(message.from, session);
+
+    return [buildCvMessage(session.profile), formatJobList(jobs, session.profile)];
   }
 
   if (message.type === "audio") {
@@ -160,9 +158,22 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 }
 
 function isKnownShortCommand(normalized: string) {
-  return ["hi", "hello", "hey", "yes", "y", "no", "apply", "confirm"].includes(
-    normalized,
-  );
+  return [
+    "hi",
+    "hello",
+    "hey",
+    "yes",
+    "y",
+    "no",
+    "apply",
+    "confirm",
+    "jobs",
+    "find jobs",
+    "job listings",
+    "status",
+    "usage",
+    "ai status",
+  ].includes(normalized);
 }
 
 function hasJobIntent(text: string) {
@@ -270,26 +281,42 @@ Availability: ${profile.availability}
 Verification: trusted worker badge pending`;
 }
 
-function buildJobsMessage(profile: WorkerProfile) {
-  const bestJob = jobs[0];
+function beginApplication(phone: string, session: Session, text: string) {
+  if (!session.profile) {
+    return [
+      "Please make your worker profile first. Send the work you want, experience, area, minimum salary, and availability.",
+    ];
+  }
 
-  return `I found 3 matches.
+  const job = getJobBySelection(session.jobs, text);
 
-Best match: ${bestJob.title} in ${bestJob.location}, PKR ${bestJob.salaryPkr.toLocaleString("en-PK")} (${bestJob.match}% match).
+  if (!job) {
+    return [
+      "I do not have job matches yet. Reply YES after your profile, and I will find jobs first.",
+    ];
+  }
 
-It is close to you, but below your minimum salary of PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}.
-
-Should I negotiate for PKR 45,000?
-Reply APPLY or CONFIRM.`;
-}
-
-function beginNegotiation(phone: string, session: Session) {
   session.stage = "offer_made";
-  session.selectedJobId = jobs[0].id;
+  session.selectedJob = job;
   sessions.set(phone, session);
 
+  const application = formatApplicationSummary(job, session.profile);
+
+  return [application.started, application.offer];
+}
+
+function buildStatusMessage() {
+  const jobStatus = getJobSearchStatus();
+
   return [
-    "Got it. I will message the employer as your representative and negotiate within your limits.",
-    "Employer simulation:\nPosted salary was PKR 38,000.\nI negotiated using your 4 years of driving experience and nearby location.\n\nGood news: final offer is PKR 45,000, Monday start, Sunday off.\n\nShould I confirm?\nReply CONFIRM.",
-  ];
+    getAiStatus(),
+    `Job search status:
+
+Provider: ${jobStatus.provider === "exa" ? "Exa live search" : "Seeded demo fallback"}
+Exa live calls: ${jobStatus.liveCalls}
+Exa failures: ${jobStatus.liveFailures}
+Exa cost seen: $${jobStatus.liveCostDollars.toFixed(4)}
+Last live search: ${jobStatus.lastSearchAt ?? "none"}
+Last Exa error: ${jobStatus.lastError ?? "none"}`,
+  ].join("\n\n");
 }
