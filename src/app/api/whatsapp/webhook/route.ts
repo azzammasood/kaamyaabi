@@ -74,6 +74,14 @@ type WhatsAppWebhookEvent =
 
 export const runtime = "nodejs";
 
+const globalForWebhookDedupe = globalThis as typeof globalThis & {
+  __kaamyaabiProcessedMessageIds?: Map<string, number>;
+};
+
+const processedMessageIds =
+  globalForWebhookDedupe.__kaamyaabiProcessedMessageIds ?? new Map<string, number>();
+globalForWebhookDedupe.__kaamyaabiProcessedMessageIds = processedMessageIds;
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const mode = url.searchParams.get("hub.mode");
@@ -97,15 +105,45 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const payload = (await request.json()) as WhatsAppWebhookPayload;
   const events = extractWebhookEvents(payload);
-  const messages = events.filter((event) => event.kind === "message");
+  const messages = events
+    .filter((event) => event.kind === "message")
+    .filter(shouldProcessMessage);
 
   if (events.length > 0) {
     console.info("WhatsApp webhook events", events);
   }
 
-  await Promise.all(messages.map(replyToWorker));
+  Promise.all(messages.map(replyToWorker)).catch((error) => {
+    console.error("WhatsApp background reply failed", error);
+  });
 
   return Response.json({ received: true });
+}
+
+function shouldProcessMessage(message: Extract<WhatsAppWebhookEvent, { kind: "message" }>) {
+  const now = Date.now();
+  const ttlMs = 15 * 60 * 1000;
+
+  for (const [id, seenAt] of processedMessageIds.entries()) {
+    if (now - seenAt > ttlMs) {
+      processedMessageIds.delete(id);
+    }
+  }
+
+  if (!message.id) {
+    return true;
+  }
+
+  if (processedMessageIds.has(message.id)) {
+    console.info("Skipping duplicate WhatsApp message", {
+      id: message.id,
+      from: message.from,
+    });
+    return false;
+  }
+
+  processedMessageIds.set(message.id, now);
+  return true;
 }
 
 function extractWebhookEvents(

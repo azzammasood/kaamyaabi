@@ -36,7 +36,7 @@ export async function sendWhatsAppButtons(
 }
 
 export async function sendWhatsAppTyping(messageId: string | undefined) {
-  if (!messageId) {
+  if (!messageId || !messageId.startsWith("wamid.H")) {
     return;
   }
 

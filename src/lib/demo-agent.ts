@@ -162,7 +162,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     return rejectJob(message.from, session, text);
   }
 
-  if (isApplyCommand(normalized) && session.profile && session.stage === "jobs_shown") {
+  if (isApplyCommand(normalized) && session.profile && session.jobs?.length) {
     return beginApplication(message.from, session, text, message);
   }
 
@@ -251,6 +251,15 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
 
     await sendProgress(message, progressMessage("profile", language));
     const profile = await extractWorkerProfile(transcript);
+    const profileMissingFields = getMissingExtractedProfileFields(profile);
+
+    if (profileMissingFields.length > 0) {
+      return [
+        voiceTranscriptMessage(transcript, language),
+        buildMissingDetailsMessage(profileMissingFields, language),
+      ];
+    }
+
     session.profile = profile;
     session.stage = "profile_review";
     sessions.set(message.from, session);
@@ -278,6 +287,12 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
 
     await sendProgress(message, progressMessage("profile", language));
     const profile = await extractWorkerProfile(text);
+    const profileMissingFields = getMissingExtractedProfileFields(profile);
+
+    if (profileMissingFields.length > 0) {
+      return [buildMissingDetailsMessage(profileMissingFields, language)];
+    }
+
     session.profile = profile;
     session.stage = "profile_review";
     sessions.set(message.from, session);
@@ -438,9 +453,9 @@ function progressMessage(
 ) {
   const messages = {
     profile: {
-      english: "Thinking through your profile...",
-      urdu: "Aapki profile samajh raha hoon...",
-      pashto: "Sta profile samjawom...",
+      english: "Reading your details and building the worker profile...",
+      urdu: "Aapki details parh kar worker profile bana raha hoon...",
+      pashto: "Sta details goram aw worker profile jorawom...",
     },
     jobs: {
       english: "Scavenging jobs and ranking the safest matches...",
@@ -507,6 +522,32 @@ function getMissingProfileFields(text: string) {
   }
 
   if (!hasAvailability(text)) {
+    missing.push("availability");
+  }
+
+  return missing;
+}
+
+function getMissingExtractedProfileFields(profile: WorkerProfile) {
+  const missing: string[] = [];
+
+  if (!profile.role || /^not (provided|specified)$/i.test(profile.role)) {
+    missing.push("work/role");
+  }
+
+  if (!profile.location || /^not (provided|specified)$/i.test(profile.location)) {
+    missing.push("area/city");
+  }
+
+  if (!Number.isFinite(profile.experienceYears) || profile.experienceYears < 0) {
+    missing.push("experience");
+  }
+
+  if (!Number.isFinite(profile.minimumSalaryPkr) || profile.minimumSalaryPkr <= 0) {
+    missing.push("minimum salary");
+  }
+
+  if (!profile.availability || /^not (provided|specified)$/i.test(profile.availability)) {
     missing.push("availability");
   }
 
