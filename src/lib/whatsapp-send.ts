@@ -1,4 +1,44 @@
 export async function sendWhatsAppText(to: string | undefined, body: string) {
+  return sendWhatsAppMessage(to, {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: {
+      preview_url: false,
+      body,
+    },
+  });
+}
+
+export async function sendWhatsAppButtons(
+  to: string | undefined,
+  body: string,
+  buttons: Array<{ id: string; title: string }>,
+) {
+  return sendWhatsAppMessage(to, {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: body },
+      action: {
+        buttons: buttons.slice(0, 3).map((button) => ({
+          type: "reply",
+          reply: {
+            id: button.id.slice(0, 256),
+            title: button.title.slice(0, 20),
+          },
+        })),
+      },
+    },
+  });
+}
+
+async function sendWhatsAppMessage(
+  to: string | undefined,
+  payload: Record<string, unknown>,
+) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -15,15 +55,7 @@ export async function sendWhatsAppText(to: string | undefined, body: string) {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to,
-        type: "text",
-        text: {
-          preview_url: false,
-          body,
-        },
-      }),
+      body: JSON.stringify(payload),
     },
   );
 

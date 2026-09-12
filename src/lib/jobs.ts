@@ -1,5 +1,6 @@
 import type { WorkerProfile } from "@/lib/ai";
 import type { LanguageCode } from "@/lib/language";
+import { assessJobTrust, formatTrustBadge } from "@/lib/trust";
 
 export type JobListing = {
   id: string;
@@ -338,12 +339,19 @@ Recommended: apply to #1 first. Salary ask: PKR ${profile.minimumSalaryPkr.toLoc
 Reply APPLY 1, APPLY 2, or APPLY 3.`;
 }
 
+export function formatJobMessages(
+  jobs: JobListing[],
+  language: LanguageCode = "english",
+) {
+  return jobs.map((job, index) => formatJobCard(job, index + 1, language));
+}
+
 export function getJobBySelection(jobs: JobListing[] | undefined, text: string) {
   if (!jobs || jobs.length === 0) {
     return undefined;
   }
 
-  const selection = text.match(/\b([1-3])\b/)?.[1];
+  const selection = text.match(/(?:^|[^0-9])([1-3])(?:$|[^0-9])/)?.[1];
   const index = selection ? Number(selection) - 1 : 0;
   return jobs[index] ?? jobs[0];
 }
@@ -1045,6 +1053,9 @@ function formatJobCard(
   const locationLabel = job.locationVerified
     ? job.location
     : `${job.location} (verify on listing)`;
+  const trust = assessJobTrust(job);
+  const warningLine =
+    trust.warnings.length > 0 ? `\nTrust notes: ${trust.warnings.join("; ")}` : "";
   const linkLine = job.url ? `\nOpen listing: ${job.url}` : "";
   const applyLine =
     job.applicationMethod === "contact" && job.contactHint
@@ -1061,6 +1072,7 @@ Salary: ${formatSalary(job.salaryPkr)}
 Match: ${job.match}%
 Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
+Trust: ${formatTrustBadge(trust)}${warningLine}
 
 ${job.summary}${applyLine}
 
@@ -1075,6 +1087,7 @@ Salary: ${formatSalary(job.salaryPkr)}
 Match: ${job.match}%
 Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
+Trust: ${formatTrustBadge(trust)}${warningLine}
 
 ${job.summary}${applyLine}
 
@@ -1088,6 +1101,7 @@ Salary: ${formatSalary(job.salaryPkr)}
 Match: ${job.match}%
 Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
+Trust: ${formatTrustBadge(trust)}${warningLine}
 
 ${job.summary}${applyLine}
 

@@ -2,7 +2,7 @@ import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai"
 import { runJobApplicationAgent } from "@/lib/job-application-agent";
 import { runJobHuntingAgent } from "@/lib/job-hunting-agent";
 import {
-  formatJobList,
+  formatJobMessages,
   getApplicationStatus,
   getJobBySelection,
   getJobSearchStatus,
@@ -14,6 +14,18 @@ import {
   detectLanguageChange,
   type LanguageCode,
 } from "@/lib/language";
+import {
+  runTrustAgent,
+} from "@/lib/trust-agent";
+import { assessWorkerTrust, formatTrustBadge } from "@/lib/trust";
+
+export type AgentReply =
+  | string
+  | {
+      kind: "buttons";
+      body: string;
+      buttons: Array<{ id: string; title: string }>;
+    };
 
 type Session = {
   applications?: Array<{
@@ -26,6 +38,7 @@ type Session = {
   jobs?: JobListing[];
   language?: LanguageCode;
   profile?: WorkerProfile;
+  rejectedJobIds?: string[];
   selectedJob?: JobListing;
   stage: "new" | "profile_review" | "jobs_shown" | "application_ready" | "applied";
   watchMode?: {
@@ -51,7 +64,7 @@ const globalForSessions = globalThis as typeof globalThis & {
 const sessions = globalForSessions.__kaamyaabiSessions ?? new Map<string, Session>();
 globalForSessions.__kaamyaabiSessions = sessions;
 
-export async function handleWorkerMessage(message: WorkerMessage) {
+export async function handleWorkerMessage(message: WorkerMessage): Promise<AgentReply[]> {
   const session = sessions.get(message.from) ?? { stage: "new" };
   const text = message.text?.trim() ?? "";
   const spokenText = message.transcript?.trim() || text;
@@ -89,10 +102,11 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 
     const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
+    session.rejectedJobIds = [];
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
-    return [formatJobList(jobs, session.profile, language)];
+    return buildJobListingReplies(jobs, session.profile, language);
   }
 
   if (isDirectContactCommand(normalized)) {
@@ -104,12 +118,13 @@ export async function handleWorkerMessage(message: WorkerMessage) {
       preferDirectContact: true,
     });
     session.jobs = jobs;
+    session.rejectedJobIds = [];
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
     return [
       directContactIntro(language),
-      formatJobList(jobs, session.profile, language),
+      ...buildJobListingReplies(jobs, session.profile, language),
     ];
   }
 
@@ -140,6 +155,10 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     return [confirmNeedsSubmissionMessage(language)];
   }
 
+  if (isRejectCommand(normalized) && session.profile && session.stage === "jobs_shown") {
+    return rejectJob(message.from, session, text);
+  }
+
   if (isApplyCommand(normalized) && session.profile && session.stage === "jobs_shown") {
     return beginApplication(message.from, session, text);
   }
@@ -155,6 +174,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
         preferDirectContact: true,
       });
       session.jobs = jobs;
+      session.rejectedJobIds = [];
       session.stage = "jobs_shown";
       session.watchMode = {
         autoApply,
@@ -169,14 +189,14 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 
         return [
           watchApplyActiveMessage(language),
-          formatJobList(jobs, session.profile, language),
+          ...buildJobListingReplies(jobs, session.profile, language),
           ...application,
         ];
       }
 
       return [
         watchActiveMessage(language),
-        formatJobList(jobs, session.profile, language),
+        ...buildJobListingReplies(jobs, session.profile, language),
       ];
     }
 
@@ -189,11 +209,12 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 
     const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
+    session.rejectedJobIds = [];
     sessions.set(message.from, session);
 
     return [
       buildCvMessage(session.profile, language),
-      formatJobList(jobs, session.profile, language),
+      ...buildJobListingReplies(jobs, session.profile, language),
     ];
   }
 
@@ -225,7 +246,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 
     return [
       voiceTranscriptMessage(transcript, language),
-      buildProfileReview(profile, language),
+      buildProfileReview(profile, language, session.contact ?? { phone: message.from }),
     ];
   }
 
@@ -249,7 +270,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     session.stage = "profile_review";
     sessions.set(message.from, session);
 
-    return [buildProfileReview(profile, language)];
+    return [buildProfileReview(profile, language, session.contact ?? { phone: message.from })];
   }
 
   return [introMessage(language)];
@@ -276,6 +297,7 @@ export async function runWatchChecks(
     const topJob = jobs[0];
 
     session.jobs = jobs;
+    session.rejectedJobIds = [];
     session.stage = "jobs_shown";
     session.watchMode.lastCheckedAt = new Date().toISOString();
 
@@ -294,7 +316,7 @@ export async function runWatchChecks(
       const applicationMessages = await beginApplication(phone, session, "APPLY 1");
 
       for (const reply of applicationMessages) {
-        await sendMessage(phone, reply);
+        await sendMessage(phone, replyToText(reply));
       }
 
       applicationsStarted += 1;
@@ -309,7 +331,7 @@ export async function runWatchChecks(
 }
 
 function isKnownShortCommand(normalized: string) {
-  if (isApplyCommand(normalized)) {
+  if (isApplyCommand(normalized) || isRejectCommand(normalized)) {
     return true;
   }
 
@@ -320,7 +342,9 @@ function isKnownShortCommand(normalized: string) {
     "yes",
     "y",
     "no",
+    "reject",
     "apply",
+    "approve",
     "confirm",
     "done",
     "submitted",
@@ -357,7 +381,11 @@ function mergeApplicantContact(
 }
 
 function isApplyCommand(normalized: string) {
-  return /^(apply|confirm)(\s+[1-3])?$/.test(normalized);
+  return /^(apply|approve|confirm)([\s_]+[1-3])?$/.test(normalized);
+}
+
+function isRejectCommand(normalized: string) {
+  return /^(reject|skip|no)([\s_]+[1-3])?$/.test(normalized);
 }
 
 function isDirectContactCommand(normalized: string) {
@@ -469,7 +497,18 @@ Please send one message like:
 Electrician, Islamabad, 3 years experience, minimum salary 45000, available Monday.`;
 }
 
-function buildProfileReview(profile: WorkerProfile, language: LanguageCode) {
+function buildProfileReview(
+  profile: WorkerProfile,
+  language: LanguageCode,
+  contact?: ApplicantContact,
+) {
+  const workerTrust = assessWorkerTrust(profile, contact);
+  const trustLine = `Worker trust: ${formatTrustBadge(workerTrust)}${
+    workerTrust.warnings.length > 0
+      ? `\nTrust notes: ${workerTrust.warnings.join("; ")}`
+      : ""
+  }`;
+
   if (language === "urdu") {
     return `Maine aapki worker profile bana di:
 
@@ -480,6 +519,7 @@ Experience: ${profile.experienceYears} years
 Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
 Skills: ${profile.skills.join(", ")}
 Available: ${profile.availability}
+${trustLine}
 
 Kya yeh theek hai? YES reply karein.`;
   }
@@ -494,6 +534,7 @@ Experience: ${profile.experienceYears} years
 Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
 Skills: ${profile.skills.join(", ")}
 Available: ${profile.availability}
+${trustLine}
 
 Da sahi da? YES reply oka.`;
   }
@@ -507,6 +548,7 @@ Experience: ${profile.experienceYears} years
 Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
 Skills: ${profile.skills.join(", ")}
 Available: ${profile.availability}
+${trustLine}
 
 Is this correct? Reply YES.`;
 }
@@ -550,6 +592,40 @@ Availability: ${profile.availability}
 Verification: trusted worker badge pending`;
 }
 
+function rejectJob(phone: string, session: Session, text: string) {
+  const job = getJobBySelection(session.jobs, text);
+  const language = session.language ?? "english";
+
+  if (!job) {
+    return [noCurrentMatchesMessage(language)];
+  }
+
+  session.rejectedJobIds = [...new Set([...(session.rejectedJobIds ?? []), job.id])];
+  sessions.set(phone, session);
+
+  const remainingJobs =
+    session.jobs?.filter((candidate) => !session.rejectedJobIds?.includes(candidate.id)) ??
+    [];
+
+  if (remainingJobs.length === 0) {
+    return [
+      language === "urdu"
+        ? "Rejected. Is list mein aur jobs nahi bachi. JOBS bhejein aur main fresh search chala dunga."
+        : language === "pashto"
+          ? "Rejected. De list ke nor jobs nishta. JOBS rawalega, za ba fresh search okram."
+          : "Rejected. No more jobs left in this list. Send JOBS and I will run a fresh search.",
+    ];
+  }
+
+  return [
+    language === "urdu"
+      ? `Rejected #${getSelectionNumber(text)}. Agli job approve kar sakte hain, ya JOBS bhej kar fresh search.`
+      : language === "pashto"
+        ? `Rejected #${getSelectionNumber(text)}. Bala job approve kawalay she, ya JOBS rawalega.`
+        : `Rejected #${getSelectionNumber(text)}. You can approve another job, or send JOBS for a fresh search.`,
+  ];
+}
+
 async function beginApplication(phone: string, session: Session, text: string) {
   if (!session.profile) {
     return [
@@ -568,6 +644,22 @@ async function beginApplication(phone: string, session: Session, text: string) {
   session.stage = "application_ready";
   session.selectedJob = job;
   sessions.set(phone, session);
+
+  const trustGate = runTrustAgent({
+    contact: session.contact ?? { phone },
+    job,
+    profile: session.profile,
+  });
+
+  if (!trustGate.allowed) {
+    return [
+      trustBlockedMessage(
+        trustGate.workerTrust,
+        trustGate.jobTrust,
+        session.language ?? "english",
+      ),
+    ];
+  }
 
   const application = await runJobApplicationAgent({
     applicantContact: session.contact ?? { phone },
@@ -593,6 +685,52 @@ async function beginApplication(phone: string, session: Session, text: string) {
   return application.messages;
 }
 
+function trustBlockedMessage(
+  workerTrust: Parameters<typeof formatTrustBadge>[0],
+  jobTrust: Parameters<typeof formatTrustBadge>[0],
+  language: LanguageCode,
+) {
+  const details = `Worker trust: ${formatTrustBadge(workerTrust)}
+${workerTrust.warnings.length > 0 ? `Worker notes: ${workerTrust.warnings.join("; ")}\n` : ""}Job trust: ${formatTrustBadge(jobTrust)}
+${jobTrust.warnings.length > 0 ? `Job notes: ${jobTrust.warnings.join("; ")}` : ""}`;
+
+  if (language === "urdu") {
+    return `Safety check ne apply block kar diya.
+
+${details}
+
+JOBS bhejein aur better verified listing choose karein, ya profile/contact details complete karein.`;
+  }
+
+  if (language === "pashto") {
+    return `Safety check apply block ko.
+
+${details}
+
+JOBS rawalega aw better verified listing choose oka, ya profile/contact details complete kra.`;
+  }
+
+  return `Safety check blocked this application.
+
+${details}
+
+Send JOBS and choose a better verified listing, or complete your profile/contact details.`;
+}
+
+function getSelectionNumber(text: string) {
+  return text.match(/(?:^|[^0-9])([1-3])(?:$|[^0-9])/)?.[1] ?? "1";
+}
+
+function replyToText(reply: AgentReply) {
+  if (typeof reply === "string") {
+    return reply;
+  }
+
+  return `${reply.body}\n\n${reply.buttons
+    .map((button) => `${button.title}: ${button.id.replace("_", " ")}`)
+    .join("\n")}`;
+}
+
 function buildStatusMessage(language: LanguageCode) {
   const jobStatus = getJobSearchStatus();
   const applyStatus = getApplicationStatus();
@@ -606,6 +744,11 @@ function buildStatusMessage(language: LanguageCode) {
   return [
     heading,
     getAiStatus(),
+    `Agent orchestration:
+
+CrewAI integrated: no
+Runtime orchestration: TypeScript agents
+Agents: job hunting, trust/verification, job application`,
     `Job search status:
 
 Provider: ${jobStatus.provider === "exa" ? "Exa live search" : "Seeded demo fallback"}
@@ -692,6 +835,46 @@ function directContactIntro(language: LanguageCode) {
     default:
       return "Direct-contact search is running. I am prioritizing jobs with phone, email, or WhatsApp contact routes.";
   }
+}
+
+function buildJobListingReplies(
+  jobs: JobListing[],
+  profile: WorkerProfile,
+  language: LanguageCode,
+): AgentReply[] {
+  const sourceLabel = jobs.some((job) => job.source === "live")
+    ? "multi-source live search"
+    : "demo fallback";
+  const liveSources = [
+    ...new Set(jobs.filter((job) => job.source === "live").map((job) => job.sourceLabel)),
+  ];
+  const intro =
+    language === "urdu"
+      ? `Mujhe ${jobs.length} job matches mile (${sourceLabel}). Har job alag message mein hai. Approve ya Reject tap karein.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`
+      : language === "pashto"
+        ? `Ma ${jobs.length} job matches paida kre (${sourceLabel}). Har job alag message ke da. Approve ya Reject tap oka.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`
+        : `I found ${jobs.length} job matches (${sourceLabel}). Each job is in its own message. Tap Approve or Reject.\n${liveSources.length > 0 ? `Sources: ${liveSources.join(", ")}` : ""}`;
+
+  return [
+    intro.trim(),
+    ...formatJobMessages(jobs, language).map((body, index) => ({
+      kind: "buttons" as const,
+      body: trimButtonBody(
+        `${body}\n\nRecommended salary ask: PKR ${profile.minimumSalaryPkr.toLocaleString(
+          "en-PK",
+        )}+`,
+      ),
+      buttons: [
+        { id: `APPROVE_${index + 1}`, title: "Approve" },
+        { id: `REJECT_${index + 1}`, title: "Reject" },
+      ],
+    })),
+  ];
+}
+
+function trimButtonBody(body: string) {
+  const maxLength = 980;
+  return body.length <= maxLength ? body : `${body.slice(0, maxLength - 3)}...`;
 }
 
 function editProfileMessage(language: LanguageCode) {

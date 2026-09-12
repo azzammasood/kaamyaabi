@@ -39,6 +39,8 @@ Workspace:
 - Downloads WhatsApp audio media.
 - Transcribes voice notes using Gemini.
 - Sends replies through WhatsApp Cloud API.
+- Sends each ranked job as a separate WhatsApp interactive button message.
+- Supports per-job `Approve` and `Reject` actions from WhatsApp buttons.
 - Avoids replying in English before detecting voice-note language.
 
 Paths:
@@ -86,6 +88,7 @@ Paths:
 - Searches and ranks live jobs from multiple source types.
 - Uses source classification, role filtering, location confidence, salary fit, deduping, and reliability scoring.
 - Supports direct-contact preference for phone/email/WhatsApp opportunities.
+- Displays each match as its own card-style WhatsApp message with trust notes and approval controls.
 
 Sources covered:
 - OLX Pakistan
@@ -105,6 +108,18 @@ Paths:
 - `src/lib/jobs.ts`
 - `src/lib/job-hunting-agent.ts`
 - `src/app/api/demo/jobs/route.ts`
+
+### Trust And Verification Agent
+
+- Scores worker trust from WhatsApp phone, name, role, location, salary expectation, and profile completeness.
+- Scores job trust from live/demo source, platform reliability, application route, URL presence, location, salary visibility, and scam-language checks.
+- Blocks application attempts for low-trust workers or suspicious jobs.
+- Adds visible trust badges to worker profile review and job cards.
+
+Paths:
+- `src/lib/trust.ts`
+- `src/lib/trust-agent.ts`
+- `src/lib/demo-agent.ts`
 
 ### Job Application Agent
 
@@ -161,6 +176,8 @@ WhatsApp demo commands:
 - `reset`
 - `YES`
 - `NO`
+- `Approve` button
+- `Reject` button
 - `JOBS`
 - `contacts`
 - `direct jobs`

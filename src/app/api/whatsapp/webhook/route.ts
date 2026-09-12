@@ -1,7 +1,7 @@
 import { handleWorkerMessage, runWatchChecks } from "@/lib/demo-agent";
 import { transcribeAudio } from "@/lib/ai";
 import { downloadWhatsAppMedia } from "@/lib/whatsapp";
-import { sendWhatsAppText } from "@/lib/whatsapp-send";
+import { sendWhatsAppButtons, sendWhatsAppText } from "@/lib/whatsapp-send";
 
 type WhatsAppWebhookEntry = {
   changes?: Array<{
@@ -19,6 +19,13 @@ type WhatsAppWebhookEntry = {
         type?: string;
         text?: {
           body?: string;
+        };
+        interactive?: {
+          type?: string;
+          button_reply?: {
+            id?: string;
+            title?: string;
+          };
         };
         audio?: {
           id?: string;
@@ -114,7 +121,10 @@ function extractWebhookEvents(
               from: message.from,
               id: message.id,
               type: message.type,
-              text: message.text?.body,
+              text:
+                message.text?.body ||
+                message.interactive?.button_reply?.id ||
+                message.interactive?.button_reply?.title,
               audioId: message.audio?.id,
               audioMimeType: message.audio?.mime_type,
               contactName: contact?.profile?.name,
@@ -170,7 +180,11 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
   });
 
   for (const reply of replies) {
-    await sendWhatsAppText(message.from, reply);
+    if (typeof reply === "string") {
+      await sendWhatsAppText(message.from, reply);
+    } else {
+      await sendWhatsAppButtons(message.from, reply.body, reply.buttons);
+    }
   }
 }
 
