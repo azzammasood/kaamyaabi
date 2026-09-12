@@ -24,6 +24,13 @@ export type JobListing = {
   why: string[];
 };
 
+export type ApplicationResult = {
+  messages: string[];
+  provider: "boringproject" | "manual";
+  status: "queued" | "needs_manual_submit" | "failed";
+  externalSessionId?: string;
+};
+
 export type JobSearchStatus = {
   provider: "exa" | "seeded";
   liveCalls: number;
@@ -34,6 +41,16 @@ export type JobSearchStatus = {
   liveCostDollars: number;
   lastSearchAt?: string;
   lastError?: string;
+};
+
+const applicationStatus = {
+  boringProjectCalls: 0,
+  boringProjectFailures: 0,
+  manualHandoffs: 0,
+  lastProvider: "manual" as ApplicationResult["provider"],
+  lastStatus: "needs_manual_submit" as ApplicationResult["status"],
+  lastSessionId: undefined as string | undefined,
+  lastError: undefined as string | undefined,
 };
 
 type JobPlatform =
@@ -244,6 +261,10 @@ export function getJobSearchStatus() {
   return jobSearchStatus;
 }
 
+export function getApplicationStatus() {
+  return applicationStatus;
+}
+
 export function formatJobList(jobs: JobListing[], profile: WorkerProfile) {
   const sourceLabel = jobs.some((job) => job.source === "live")
     ? "multi-source live search"
@@ -315,6 +336,152 @@ After you submit or message the employer, reply DONE.
 
 If the site asks extra questions, copy them here and I will help answer.`,
   };
+}
+
+export async function startJobApplication(
+  job: JobListing,
+  profile: WorkerProfile,
+): Promise<ApplicationResult> {
+  if (job.applicationMethod === "unavailable") {
+    applicationStatus.manualHandoffs += 1;
+    applicationStatus.lastProvider = "manual";
+    applicationStatus.lastStatus = "needs_manual_submit";
+
+    const application = formatApplicationSummary(job, profile);
+    return {
+      messages: [application.started, application.offer].filter(Boolean),
+      provider: "manual",
+      status: "needs_manual_submit",
+    };
+  }
+
+  const boringProjectKey = process.env.BORING_PROJECT_API_KEY;
+  const candidateProfileId = process.env.BORING_PROJECT_CANDIDATE_PROFILE_ID;
+
+  if (boringProjectKey && candidateProfileId && job.url) {
+    const result = await submitWithBoringProject({
+      apiKey: boringProjectKey,
+      candidateProfileId,
+      job,
+      profile,
+    });
+
+    if (result.status === "queued") {
+      return result;
+    }
+  }
+
+  applicationStatus.manualHandoffs += 1;
+  applicationStatus.lastProvider = "manual";
+  applicationStatus.lastStatus = "needs_manual_submit";
+
+  const application = formatApplicationSummary(job, profile);
+
+  return {
+    messages: [
+      boringProjectKey && !candidateProfileId
+        ? "Auto-apply provider is configured, but BORING_PROJECT_CANDIDATE_PROFILE_ID is missing."
+        : "Auto-apply provider is not configured yet, so I prepared the reliable application handoff.",
+      application.started,
+      application.offer,
+    ].filter(Boolean),
+    provider: "manual",
+    status: "needs_manual_submit",
+  };
+}
+
+async function submitWithBoringProject(input: {
+  apiKey: string;
+  candidateProfileId: string;
+  job: JobListing;
+  profile: WorkerProfile;
+}): Promise<ApplicationResult> {
+  applicationStatus.boringProjectCalls += 1;
+  applicationStatus.lastProvider = "boringproject";
+
+  try {
+    const response = await fetch(
+      "https://apply-api.boringproject.ai/api/v1/sessions/apply",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          candidateProfileId: input.candidateProfileId,
+          webhookUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/applications/boringproject/webhook`,
+          jobs: [
+            {
+              companyName: input.job.employer,
+              title: input.job.title,
+              jobId: input.job.id,
+              link: input.job.url,
+            },
+          ],
+          metadata: {
+            source: "kaamyaabi-whatsapp",
+            workerName: input.profile.name,
+            workerRole: input.profile.role,
+            workerLocation: input.profile.location,
+            expectedSalaryPkr: input.profile.minimumSalaryPkr,
+          },
+        }),
+      },
+    );
+
+    const json = (await response.json().catch(() => ({}))) as {
+      sessionId?: string;
+      status?: string;
+      error?: string;
+      message?: string;
+    };
+
+    if (!response.ok) {
+      throw new Error(
+        json.error || json.message || `BoringProject returned ${response.status}`,
+      );
+    }
+
+    applicationStatus.lastStatus = "queued";
+    applicationStatus.lastSessionId = json.sessionId;
+    applicationStatus.lastError = undefined;
+
+    return {
+      messages: [
+        `Auto-apply queued via BoringProject.
+
+Job: ${input.job.title}
+Company: ${input.job.employer}
+Source: ${input.job.sourceLabel}
+Session: ${json.sessionId ?? "not returned"}
+Status: ${json.status ?? "queued"}
+
+I will treat the webhook result as final: submitted, needs input, or failed.`,
+      ],
+      provider: "boringproject",
+      status: "queued",
+      externalSessionId: json.sessionId,
+    };
+  } catch (error) {
+    applicationStatus.boringProjectFailures += 1;
+    applicationStatus.lastStatus = "failed";
+    applicationStatus.lastError =
+      error instanceof Error ? error.message : "Unknown BoringProject error";
+
+    const application = formatApplicationSummary(input.job, input.profile);
+    return {
+      messages: [
+        `Auto-apply failed, so I prepared the manual application packet instead.
+
+Reason: ${applicationStatus.lastError}`,
+        application.started,
+        application.offer,
+      ],
+      provider: "manual",
+      status: "failed",
+    };
+  }
 }
 
 function buildApplicationMessage(

@@ -1,10 +1,11 @@
 import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai";
 import {
   findJobsForProfile,
-  formatApplicationSummary,
   formatJobList,
+  getApplicationStatus,
   getJobBySelection,
   getJobSearchStatus,
+  startJobApplication,
   type JobListing,
 } from "@/lib/jobs";
 
@@ -12,12 +13,17 @@ type Session = {
   applications?: Array<{
     jobId: string;
     jobTitle: string;
+    provider: "boringproject" | "manual";
     submittedAt: string;
   }>;
   jobs?: JobListing[];
   profile?: WorkerProfile;
   selectedJob?: JobListing;
   stage: "new" | "profile_review" | "jobs_shown" | "application_ready" | "applied";
+  watchMode?: {
+    autoApply: boolean;
+    createdAt: string;
+  };
 };
 
 export type WorkerMessage = {
@@ -78,6 +84,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
         {
           jobId: session.selectedJob.id,
           jobTitle: session.selectedJob.title,
+          provider: "manual",
           submittedAt: new Date().toISOString(),
         },
       ];
@@ -109,8 +116,35 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   }
 
   if (normalized.startsWith("watch")) {
+    if (session.profile) {
+      const autoApply = /\bapply\b/.test(normalized);
+      const jobs = await findJobsForProfile(session.profile);
+      session.jobs = jobs;
+      session.stage = "jobs_shown";
+      session.watchMode = {
+        autoApply,
+        createdAt: new Date().toISOString(),
+      };
+      sessions.set(message.from, session);
+
+      if (autoApply && jobs[0]) {
+        const application = await beginApplication(message.from, session, "APPLY 1");
+
+        return [
+          "Watch + apply mode is active for this session. I ran the first live check now and selected the top ranked job.",
+          formatJobList(jobs, session.profile),
+          ...application,
+        ];
+      }
+
+      return [
+        "Watch mode is active for this session. I ran the first live check now and ranked fresh listings.",
+        formatJobList(jobs, session.profile),
+      ];
+    }
+
     return [
-      "Watcher noted for this session. Send JOBS anytime and I will fetch the latest live listings again.",
+      "Watcher noted. First make your worker profile, then send WATCH again and I will fetch fresh live listings.",
     ];
   }
 
@@ -315,7 +349,7 @@ Availability: ${profile.availability}
 Verification: trusted worker badge pending`;
 }
 
-function beginApplication(phone: string, session: Session, text: string) {
+async function beginApplication(phone: string, session: Session, text: string) {
   if (!session.profile) {
     return [
       "Please make your worker profile first. Send the work you want, experience, area, minimum salary, and availability.",
@@ -334,13 +368,28 @@ function beginApplication(phone: string, session: Session, text: string) {
   session.selectedJob = job;
   sessions.set(phone, session);
 
-  const application = formatApplicationSummary(job, session.profile);
+  const application = await startJobApplication(job, session.profile);
 
-  return [application.started, application.offer].filter(Boolean);
+  if (application.status === "queued") {
+    session.stage = "applied";
+    session.applications = [
+      ...(session.applications ?? []),
+      {
+        jobId: job.id,
+        jobTitle: job.title,
+        provider: application.provider,
+        submittedAt: new Date().toISOString(),
+      },
+    ];
+    sessions.set(phone, session);
+  }
+
+  return application.messages;
 }
 
 function buildStatusMessage() {
   const jobStatus = getJobSearchStatus();
+  const applyStatus = getApplicationStatus();
 
   return [
     getAiStatus(),
@@ -355,7 +404,18 @@ Sources queried: ${jobStatus.sourcesQueried.length > 0 ? jobStatus.sourcesQuerie
 Exa cost seen: $${jobStatus.liveCostDollars.toFixed(4)}
 Last live search: ${jobStatus.lastSearchAt ?? "none"}
 Last Exa error: ${jobStatus.lastError ?? "none"}
-Applications marked submitted: ${countSubmittedApplications()}`,
+Applications marked submitted: ${countSubmittedApplications()}
+Active watch sessions: ${countWatchSessions()}
+
+Application provider:
+Auto-apply: ${process.env.BORING_PROJECT_API_KEY ? "BoringProject configured" : "manual handoff only"}
+BoringProject calls: ${applyStatus.boringProjectCalls}
+BoringProject failures: ${applyStatus.boringProjectFailures}
+Manual handoffs: ${applyStatus.manualHandoffs}
+Last application provider: ${applyStatus.lastProvider}
+Last application status: ${applyStatus.lastStatus}
+Last provider session: ${applyStatus.lastSessionId ?? "none"}
+Last provider error: ${applyStatus.lastError ?? "none"}`,
   ].join("\n\n");
 }
 
@@ -364,4 +424,8 @@ function countSubmittedApplications() {
     (total, session) => total + (session.applications?.length ?? 0),
     0,
   );
+}
+
+function countWatchSessions() {
+  return Array.from(sessions.values()).filter((session) => session.watchMode).length;
 }
