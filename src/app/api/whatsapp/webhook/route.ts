@@ -196,52 +196,70 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
   }
 
   let transcript: string | undefined;
+  const stopTyping = startTypingLoop(message.id);
 
-  await sendWhatsAppTyping(message.id);
+  try {
+    if (message.type === "audio" && message.audioId) {
+      try {
+        await sendWhatsAppText(message.from, "Listening to the voice note...");
+        const audio = await downloadWhatsAppMedia(message.audioId);
+        transcript = await transcribeAudio({
+          bytes: audio.bytes,
+          mimeType: message.audioMimeType || audio.mimeType,
+        });
+      } catch (error) {
+        console.error("Voice note processing failed", error);
+      }
+    }
 
-  if (message.type === "audio" && message.audioId) {
-    try {
-      await sendWhatsAppText(message.from, "Listening to the voice note...");
-      const audio = await downloadWhatsAppMedia(message.audioId);
-      await sendWhatsAppTyping(message.id);
-      transcript = await transcribeAudio({
-        bytes: audio.bytes,
-        mimeType: message.audioMimeType || audio.mimeType,
+    const replies = await handleWorkerMessage({
+      from: message.from,
+      type: message.type,
+      text: message.text,
+      transcript,
+      sendProgress: async (body) => {
+        await sleep(900);
+        await sendWhatsAppText(message.from, body);
+      },
+      contact: {
+        name: message.contactName,
+        phone: message.contactPhone || message.from,
+        whatsappName: message.contactName,
+      },
+    });
+
+    for (const reply of replies) {
+      await sleep(650);
+
+      if (typeof reply === "string") {
+        await sendWhatsAppText(message.from, reply);
+      } else {
+        await sendWhatsAppButtons(message.from, reply.body, reply.buttons);
+      }
+    }
+  } finally {
+    stopTyping();
+  }
+}
+
+function startTypingLoop(messageId: string | undefined) {
+  let stopped = false;
+
+  const tick = () => {
+    if (!stopped) {
+      sendWhatsAppTyping(messageId).catch((error) => {
+        console.warn("WhatsApp typing indicator failed", error);
       });
-    } catch (error) {
-      console.error("Voice note processing failed", error);
     }
-  }
+  };
 
-  const replies = await handleWorkerMessage({
-    from: message.from,
-    type: message.type,
-    text: message.text,
-    transcript,
-    sendProgress: async (body) => {
-      await sendWhatsAppTyping(message.id);
-      await sleep(1400);
-      await sendWhatsAppText(message.from, body);
-      await sendWhatsAppTyping(message.id);
-      await sleep(700);
-    },
-    contact: {
-      name: message.contactName,
-      phone: message.contactPhone || message.from,
-      whatsappName: message.contactName,
-    },
-  });
+  tick();
+  const timer = setInterval(tick, 4500);
 
-  for (const reply of replies) {
-    await sendWhatsAppTyping(message.id);
-    await sleep(350);
-
-    if (typeof reply === "string") {
-      await sendWhatsAppText(message.from, reply);
-    } else {
-      await sendWhatsAppButtons(message.from, reply.body, reply.buttons);
-    }
-  }
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 function sleep(ms: number) {

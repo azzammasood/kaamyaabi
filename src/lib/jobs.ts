@@ -478,6 +478,15 @@ export async function startJobApplication(
 
   const boringProjectKey = process.env.BORING_PROJECT_API_KEY;
   const candidateProfileId = process.env.BORING_PROJECT_CANDIDATE_PROFILE_ID;
+  const selfApplyChecks = [
+    boringProjectKey
+      ? candidateProfileId
+        ? "auto-apply provider tried"
+        : "auto-apply provider missing candidate profile id"
+      : "auto-apply provider not configured",
+    "platform api not configured",
+    "direct apply post not safe",
+  ];
 
   if (boringProjectKey && candidateProfileId && job.url) {
     const result = await submitWithBoringProject({
@@ -501,7 +510,7 @@ export async function startJobApplication(
       contact: directContact,
       job,
       language,
-      path: "email from job listing",
+      path: [...selfApplyChecks, "email from job listing"].join(" -> "),
       profile,
     });
   }
@@ -512,9 +521,8 @@ export async function startJobApplication(
 
   if (job.applicationMethod === "ats_link" || job.applicationMethod === "job_board_link") {
     return manualApplicationHandoff(job, profile, language, [
-      boringProjectKey && !candidateProfileId
-        ? "auto-apply provider missing candidate profile id"
-        : "auto-apply provider not configured",
+      ...selfApplyChecks,
+      "direct phone/email checked",
       "official listing apply route available",
     ]);
   }
@@ -527,7 +535,7 @@ export async function startJobApplication(
       contact: discoveredContact,
       job,
       language,
-      path: "company email discovered by Exa",
+      path: [...selfApplyChecks, "company email discovered by Exa"].join(" -> "),
       profile,
     });
   }
@@ -543,11 +551,10 @@ export async function startJobApplication(
   }
 
   return manualApplicationHandoff(job, profile, language, [
-    boringProjectKey && !candidateProfileId
-      ? "auto-apply provider missing candidate profile id"
-      : "auto-apply provider not configured",
+    ...selfApplyChecks,
     "no direct contact found",
     "company contact discovery returned no usable contact",
+    "manual handoff required",
   ]);
 }
 
@@ -964,6 +971,8 @@ I will treat the webhook result as final: submitted, needs input, or failed.`,
 
     const application = formatApplicationSummary(input.job, input.profile, input.language, [
       "auto-apply failed",
+      "platform api not configured",
+      "direct apply post not safe",
       "official listing apply route available",
     ]);
     return {
@@ -1135,31 +1144,46 @@ function formatPipelineSummary(
   job: JobListing,
   language: LanguageCode,
 ) {
-  const readableSteps = paths.length > 0 ? paths : ["checked available apply routes"];
+  const readableSteps = paths.length > 0 ? paths.flatMap(splitPathSteps) : ["checked available apply routes"];
   const lines = readableSteps.map((step, index) => `${index + 1}. ${formatPathStep(step)}`);
 
   switch (language) {
     case "urdu":
-      return `Application pipeline:
+      return `Application path checked:
 ${lines.join("\n")}
-Result: ${formatApplicationMethod(job.applicationMethod)} use karein.`;
+Final result: ${formatApplicationMethod(job.applicationMethod)} use karein.`;
     case "pashto":
-      return `Application pipeline:
+      return `Application path checked:
 ${lines.join("\n")}
-Result: ${formatApplicationMethod(job.applicationMethod)} use ka.`;
+Final result: ${formatApplicationMethod(job.applicationMethod)} use ka.`;
     default:
-      return `Application pipeline:
+      return `Application path checked:
 ${lines.join("\n")}
-Result: use the ${formatApplicationMethod(job.applicationMethod)}.`;
+Final result: use the ${formatApplicationMethod(job.applicationMethod)}.`;
   }
+}
+
+function splitPathSteps(step: string) {
+  return step
+    .split("->")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function formatPathStep(step: string) {
   switch (step) {
     case "auto-apply provider not configured":
       return "Auto-apply provider checked: not configured yet";
+    case "auto-apply provider tried":
+      return "Auto-apply provider tried first";
     case "auto-apply provider missing candidate profile id":
       return "Auto-apply provider checked: candidate profile missing";
+    case "platform api not configured":
+      return "Platform API checked: no connected account/API yet";
+    case "direct apply post not safe":
+      return "Direct form POST checked: no safe submit endpoint found";
+    case "direct phone/email checked":
+      return "Direct employer contact checked: not listed on this job";
     case "official listing apply route available":
       return "Official listing/apply page found";
     case "no direct contact found":
@@ -1172,6 +1196,8 @@ function formatPathStep(step: string) {
       return "Demo fallback listing checked";
     case "company contact discovery failed":
       return "Company contact search failed";
+    case "manual handoff required":
+      return "Manual handoff prepared as last fallback";
     default:
       return step;
   }

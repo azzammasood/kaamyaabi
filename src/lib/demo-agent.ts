@@ -160,7 +160,33 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     session.stage = "applied";
     sessions.set(message.from, session);
 
-    return [submittedMessage(language), watchSuggestion(language)];
+    return [submittedMessage(language), watchSuggestionReply(language)];
+  }
+
+  if (isWatchYesCommand(normalized) && session.profile && session.stage === "applied") {
+    await sendProgress(message, progressMessage("watch", language));
+    const jobs = await runJobHuntingAgent(session.profile, {
+      preferDirectContact: true,
+    });
+    session.jobs = jobs;
+    session.rejectedJobIds = [];
+    session.stage = "jobs_shown";
+    session.watchMode = {
+      autoApply: true,
+      createdAt: new Date().toISOString(),
+      lastCheckedAt: new Date().toISOString(),
+      lastTopJobId: jobs[0]?.id,
+    };
+    sessions.set(message.from, session);
+
+    return [
+      watchApplyActiveMessage(language),
+      ...buildJobListingReplies(jobs, session.profile, language),
+    ];
+  }
+
+  if (isWatchNoCommand(normalized) && session.stage === "applied") {
+    return [watchDeclinedMessage(language)];
   }
 
   if (normalized === "confirm" && session.stage === "application_ready") {
@@ -249,7 +275,9 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       ];
     }
 
-    const missingFields = getMissingProfileFields(transcript);
+    const missingFields = getMissingProfileFields(transcript).filter(
+      (field) => field !== "name" || !hasContactName(session.contact),
+    );
 
     if (missingFields.length > 0) {
       return [
@@ -259,9 +287,12 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     }
 
     await sendProgress(message, progressMessage("profile", language));
-    const profile = await extractWorkerProfile(transcript, {
-      preferredProvider: "gemini",
-    });
+    const profile = applyContactName(
+      await extractWorkerProfile(transcript, {
+        preferredProvider: "gemini",
+      }),
+      session.contact,
+    );
     const profileMissingFields = getMissingExtractedProfileFields(profile);
 
     if (profileMissingFields.length > 0) {
@@ -290,16 +321,21 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
   }
 
   if (hasJobIntent(text)) {
-    const missingFields = getMissingProfileFields(text);
+    const missingFields = getMissingProfileFields(text).filter(
+      (field) => field !== "name" || !hasContactName(session.contact),
+    );
 
     if (missingFields.length > 0) {
       return [buildMissingDetailsMessage(missingFields, language)];
     }
 
     await sendProgress(message, progressMessage("profile", language));
-    const profile = await extractWorkerProfile(text, {
-      preferredProvider: "openrouter",
-    });
+    const profile = applyContactName(
+      await extractWorkerProfile(text, {
+        preferredProvider: "openrouter",
+      }),
+      session.contact,
+    );
     const profileMissingFields = getMissingExtractedProfileFields(profile);
 
     if (profileMissingFields.length > 0) {
@@ -423,6 +459,30 @@ function mergeApplicantContact(
   };
 }
 
+function applyContactName(
+  profile: WorkerProfile,
+  contact: ApplicantContact | undefined,
+): WorkerProfile {
+  if (profile.name.trim().toLowerCase() !== "not provided") {
+    return profile;
+  }
+
+  const fallbackName = contact?.name || contact?.whatsappName;
+  if (!hasContactName(contact) || !fallbackName) {
+    return profile;
+  }
+
+  return {
+    ...profile,
+    name: fallbackName.trim(),
+  };
+}
+
+function hasContactName(contact: ApplicantContact | undefined) {
+  const value = contact?.name || contact?.whatsappName;
+  return Boolean(value && value.trim().length > 1 && !/^\+?\d/.test(value.trim()));
+}
+
 function isApplyCommand(normalized: string) {
   return /^(apply|approve|confirm)([\s_]+[1-3])?$/.test(normalized);
 }
@@ -437,6 +497,14 @@ function isProfileYesCommand(normalized: string) {
 
 function isProfileNoCommand(normalized: string) {
   return ["no", "n", "edit", "profile_no"].includes(normalized);
+}
+
+function isWatchYesCommand(normalized: string) {
+  return ["yes", "y", "watch_yes", "start watching", "start watcher"].includes(normalized);
+}
+
+function isWatchNoCommand(normalized: string) {
+  return ["no", "n", "watch_no", "skip watching"].includes(normalized);
 }
 
 function isDirectContactCommand(normalized: string) {
@@ -518,6 +586,10 @@ function buildOutOfScopeMessage(language: LanguageCode) {
 function getMissingProfileFields(text: string) {
   const missing: string[] = [];
 
+  if (!hasName(text)) {
+    missing.push("name");
+  }
+
   if (!hasRole(text)) {
     missing.push("work/role");
   }
@@ -544,6 +616,10 @@ function getMissingProfileFields(text: string) {
 function getMissingExtractedProfileFields(profile: WorkerProfile) {
   const missing: string[] = [];
 
+  if (!profile.name || /^not (provided|specified)$/i.test(profile.name)) {
+    missing.push("name");
+  }
+
   if (!profile.role || /^not (provided|specified)$/i.test(profile.role)) {
     missing.push("work/role");
   }
@@ -569,6 +645,12 @@ function getMissingExtractedProfileFields(profile: WorkerProfile) {
   }
 
   return missing;
+}
+
+function hasName(text: string) {
+  return /\b(mera naam|mere naam|my name is|name is|naam|i am|i'm|main|mein)\s+[A-Za-z][A-Za-z .'-]{1,50}/i.test(
+    text,
+  );
 }
 
 function hasRole(text: string) {
@@ -1075,14 +1157,32 @@ function submittedMessage(language: LanguageCode) {
   }
 }
 
-function watchSuggestion(language: LanguageCode) {
+function watchSuggestionReply(language: LanguageCode): AgentReply {
+  const body =
+    language === "urdu"
+      ? "Kya main ab hamesha fresh jobs watch karun aur best match milte hi aapko approve/reject ke liye bhejun?"
+      : language === "pashto"
+        ? "Za hamesha fresh jobs ogoram aw best match approval la darta rawalem?"
+        : "Should I keep watching for fresh jobs and send the best matches here for your approval?";
+
+  return {
+    kind: "buttons",
+    body,
+    buttons: [
+      { id: "WATCH_YES", title: "Yes" },
+      { id: "WATCH_NO", title: "No" },
+    ],
+  };
+}
+
+function watchDeclinedMessage(language: LanguageCode) {
   switch (language) {
     case "urdu":
-      return "WATCH APPLY bhejein aur main fresh direct-contact jobs dhoond kar top match par apply/handoff karunga.";
+      return "Theek hai. Watcher start nahi kiya. Fresh list chahiye ho to JOBS bhej dein.";
     case "pashto":
-      return "WATCH APPLY rawalega, za ba fresh direct-contact jobs ogoram aw top match apply/handoff kam.";
+      return "Theek da. Watcher me start na ko. Fresh list la JOBS rawalega.";
     default:
-      return "Send WATCH APPLY and I will keep refreshing direct-contact jobs and apply/handoff the top match.";
+      return "No problem. I did not start the watcher. Send JOBS whenever you want fresh matches.";
   }
 }
 

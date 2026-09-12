@@ -99,7 +99,7 @@ export async function extractWorkerProfile(
 ) {
   if (options.preferredProvider !== "gemini" && shouldUseOpenRouter()) {
     try {
-      return await extractProfileWithOpenRouter(transcript);
+      return recoverProfileName(await extractProfileWithOpenRouter(transcript), transcript);
     } catch (error) {
       console.warn("OpenRouter profile extraction failed; falling back to Gemini", error);
     }
@@ -126,12 +126,12 @@ export async function extractWorkerProfile(
     );
 
     geminiUsage.profileCalls += 1;
-    return parseProfileJson(extractGeminiText(response));
+    return recoverProfileName(parseProfileJson(extractGeminiText(response)), transcript);
   } catch (error) {
     geminiUsage.profileFailures += 1;
     geminiUsage.deterministicFallbacks += 1;
     console.warn("Gemini profile extraction failed; using transcript-only fallback", error);
-    return profileFromTranscript(transcript);
+    return recoverProfileName(profileFromTranscript(transcript), transcript);
   }
 }
 
@@ -375,6 +375,57 @@ function parseProfileJson(content: string) {
   });
 }
 
+function recoverProfileName(profile: WorkerProfile, transcript: string) {
+  if (!isMissingText(profile.name)) {
+    return profile;
+  }
+
+  const name = extractNameFromTranscript(transcript);
+  return name ? { ...profile, name } : profile;
+}
+
+function extractNameFromTranscript(transcript: string) {
+  const cleaned = transcript.replace(/\s+/g, " ").trim();
+  const patterns = [
+    /\b(?:mera naam|mere naam|my name is|name is|naam)\s+([A-Za-z][A-Za-z .'-]{1,50}?)(?:\s+(?:hai|he|hy|is)\b|[,.;]|$)/i,
+    /\b(?:i am|i'm|main|mein)\s+([A-Za-z][A-Za-z .'-]{1,50}?)(?:\s+(?:hoon|hun|hon|from|se)\b|[,.;]|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern)?.[1];
+    const name = normalizeExtractedName(match);
+    if (name) {
+      return name;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeExtractedName(value: string | undefined) {
+  const name = value
+    ?.replace(/\b(?:mujhe|chahiye|ka|ki|ke|job|kaam|work|driver|chef|electrician|plumber)\b.*$/i, "")
+    .trim()
+    .replace(/\s+/g, " ");
+
+  if (!name || name.length < 2 || /\d/.test(name)) {
+    return undefined;
+  }
+
+  const words = name.split(" ").slice(0, 4);
+  if (words.some((word) => word.length < 2)) {
+    return undefined;
+  }
+
+  return words
+    .map((word) => word[0].toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function isMissingText(value: string | undefined) {
+  return !value || value.trim().toLowerCase() === "not provided";
+}
+
 function textValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : "Not provided";
 }
@@ -448,7 +499,7 @@ function profileFromTranscript(transcript: string): WorkerProfile {
         : ["Not provided"];
 
   return workerProfileSchema.parse({
-    name: "Not provided",
+    name: extractNameFromTranscript(transcript) ?? "Not provided",
     role,
     location: locationMatch?.[0] ?? "Not provided",
     experienceYears: yearsMatch ? wordNumber(yearsMatch[1]) : 0,
