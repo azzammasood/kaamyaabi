@@ -1,8 +1,5 @@
 import { z } from "zod";
 
-const demoTranscript =
-  "Assalamualaikum, mujhe driver ka kaam chahiye G-9 ya G-10 ke qareeb. Mere paas 4 saal ka experience hai. Salary 40 hazaar se kam na ho. Main Monday se start kar sakta hoon.";
-
 export const workerProfileSchema = z.object({
   name: z.string().min(1),
   role: z.string().min(1),
@@ -16,42 +13,13 @@ export const workerProfileSchema = z.object({
 
 export type WorkerProfile = z.infer<typeof workerProfileSchema>;
 
-const aiUsage = {
-  openRouterProfileCalls: 0,
-  openRouterProfileFailures: 0,
-  openRouterPromptTokens: 0,
-  openRouterCompletionTokens: 0,
-  openRouterTotalTokens: 0,
-  geminiTranscriptionCalls: 0,
-  geminiTranscriptionFailures: 0,
-  geminiProfileCalls: 0,
-  geminiProfileFailures: 0,
-  heuristicProfileFallbacks: 0,
-};
-
-const workerProfileJsonSchema = {
-  type: "object",
-  properties: {
-    name: { type: "string" },
-    role: { type: "string" },
-    location: { type: "string" },
-    experienceYears: { type: "integer" },
-    minimumSalaryPkr: { type: "integer" },
-    skills: { type: "array", items: { type: "string" } },
-    availability: { type: "string" },
-    languages: { type: "array", items: { type: "string" } },
-  },
-  required: [
-    "name",
-    "role",
-    "location",
-    "experienceYears",
-    "minimumSalaryPkr",
-    "skills",
-    "availability",
-    "languages",
-  ],
-  additionalProperties: false,
+const geminiUsage = {
+  transcriptionCalls: 0,
+  transcriptionFailures: 0,
+  profileCalls: 0,
+  profileFailures: 0,
+  profileRetries: 0,
+  deterministicFallbacks: 0,
 };
 
 export async function transcribeAudio(input: {
@@ -59,314 +27,249 @@ export async function transcribeAudio(input: {
   mimeType: string;
 }) {
   try {
-    const transcript = await transcribeWithGemini(input);
-    aiUsage.geminiTranscriptionCalls += 1;
+    const data = Buffer.from(input.bytes).toString("base64");
+    const response = await requestGemini(
+      process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe",
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: "Transcribe this WhatsApp voice note exactly. Preserve Urdu, Roman Urdu, and English as spoken. Return transcript text only.",
+              },
+              { inline_data: { mime_type: input.mimeType, data } },
+            ],
+          },
+        ],
+      },
+    );
+
+    const transcript = extractGeminiText(response).trim();
+    if (!transcript) {
+      throw new Error("Gemini returned an empty transcript");
+    }
+
+    geminiUsage.transcriptionCalls += 1;
     return transcript;
   } catch (error) {
-    aiUsage.geminiTranscriptionFailures += 1;
-    console.warn("Gemini transcription failed; using demo transcript.", error);
-    return demoTranscript;
+    geminiUsage.transcriptionFailures += 1;
+    console.warn("Gemini transcription failed", error);
+    return "I could not transcribe this voice note. Please send the details as text.";
   }
 }
 
 export async function extractWorkerProfile(transcript: string) {
   try {
-    return await extractProfileWithOpenRouter(transcript);
-  } catch (openRouterError) {
-    console.warn("OpenRouter profile extraction failed.", openRouterError);
+    const response = await requestGemini(
+      process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      {
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text:
+                  "Extract a worker profile from this WhatsApp message. Do not invent details. For missing text fields use Not provided, for missing numbers use 0, and for missing lists use [Not provided]. Return JSON only with name, role, location, experienceYears, minimumSalaryPkr, skills, availability, languages.\n\nMessage:\n" +
+                  transcript,
+              },
+            ],
+          },
+        ],
+        generationConfig: { responseMimeType: "application/json" },
+      },
+    );
 
-    try {
-      const profile = await extractProfileWithGemini(transcript);
-      aiUsage.geminiProfileCalls += 1;
-      return profile;
-    } catch (geminiError) {
-      aiUsage.geminiProfileFailures += 1;
-      aiUsage.heuristicProfileFallbacks += 1;
-      console.warn("Gemini profile extraction failed; using heuristic profile.", geminiError);
-      return buildFallbackProfile(transcript);
-    }
+    geminiUsage.profileCalls += 1;
+    return parseProfileJson(extractGeminiText(response));
+  } catch (error) {
+    geminiUsage.profileFailures += 1;
+    geminiUsage.deterministicFallbacks += 1;
+    console.warn("Gemini profile extraction failed; using transcript-only fallback", error);
+    return profileFromTranscript(transcript);
   }
 }
 
 export function getAiStatus() {
-  const openRouterModel =
-    process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-mini:free";
-  const openRouterFallbackModel =
-    process.env.OPENROUTER_FALLBACK_MODEL || "nex-agi/nex-n2.5-pro:free";
-  const geminiModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const geminiTranscribeModel =
-    process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.8-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const transcribeModel =
+    process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
 
-  return `AI status since server start:
+  return "AI status since server start:\n\nProvider: Gemini only\nProfile model: " +
+    model +
+    "\nTranscription model: " +
+    transcribeModel +
+    "\n\nTranscription calls: " +
+    geminiUsage.transcriptionCalls +
+    "\nTranscription failures: " +
+    geminiUsage.transcriptionFailures +
+    "\nProfile calls: " +
+    geminiUsage.profileCalls +
+    "\nProfile failures: " +
+    geminiUsage.profileFailures +
+    "\nTemporary retries: " +
+    geminiUsage.profileRetries +
+    "\nTranscript-only fallbacks: " +
+    geminiUsage.deterministicFallbacks;
+}
 
-Primary profile AI: OpenRouter
-OpenRouter model: ${openRouterModel}
-OpenRouter fallback: ${openRouterFallbackModel}
-Voice transcription: Gemini ${geminiTranscribeModel}
-Gemini profile fallback: ${geminiModel}
+async function requestGemini(model: string, body: unknown) {
+  const apiKey = requireEnv("GEMINI_API_KEY");
+  let lastStatus = 0;
 
-OpenRouter profile calls: ${aiUsage.openRouterProfileCalls}
-OpenRouter profile failures: ${aiUsage.openRouterProfileFailures}
-OpenRouter tokens seen: ${aiUsage.openRouterTotalTokens} total (${aiUsage.openRouterPromptTokens} prompt, ${aiUsage.openRouterCompletionTokens} completion)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+        model +
+        ":generateContent?key=" +
+        encodeURIComponent(apiKey),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
 
-Gemini transcription calls: ${aiUsage.geminiTranscriptionCalls}
-Gemini transcription failures: ${aiUsage.geminiTranscriptionFailures}
-Gemini profile fallback calls: ${aiUsage.geminiProfileCalls}
-Gemini profile fallback failures: ${aiUsage.geminiProfileFailures}
-Heuristic profile fallbacks: ${aiUsage.heuristicProfileFallbacks}
+    if (response.ok) {
+      return (await response.json()) as GeminiGenerateContentResponse;
+    }
 
-Note: these are local app counters, not your full OpenRouter/Gemini billing dashboard.`;
+    lastStatus = response.status;
+    if (![429, 500, 502, 503, 504].includes(lastStatus) || attempt === 2) {
+      break;
+    }
+
+    geminiUsage.profileRetries += 1;
+    await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+  }
+
+  throw new Error("Gemini returned " + lastStatus);
 }
 
 function requireEnv(name: string) {
   const value = process.env[name];
-
   if (!value) {
-    throw new Error(`${name} is not configured`);
+    throw new Error(name + " is not configured");
   }
-
   return value;
-}
-
-async function transcribeWithGemini(input: {
-  bytes: ArrayBuffer;
-  mimeType: string;
-}) {
-  const apiKey = requireEnv("GEMINI_API_KEY");
-  const model = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.8-flash";
-  const data = Buffer.from(input.bytes).toString("base64");
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: "Transcribe this WhatsApp voice note exactly. If it mixes Urdu/Hindi and English, keep the same language in Roman Urdu where possible. Return transcript text only.",
-              },
-              {
-                inline_data: {
-                  mime_type: input.mimeType,
-                  data,
-                },
-              },
-            ],
-          },
-        ],
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Gemini transcription returned ${response.status}`);
-  }
-
-  const json = (await response.json()) as GeminiGenerateContentResponse;
-  const transcript = extractGeminiText(json).trim();
-
-  if (!transcript) {
-    throw new Error("Gemini transcription returned empty text");
-  }
-
-  return transcript;
-}
-
-async function extractProfileWithOpenRouter(transcript: string) {
-  const apiKey = requireEnv("OPENROUTER_API_KEY");
-  const baseUrl = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
-  const models = [
-    process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-mini:free",
-    process.env.OPENROUTER_FALLBACK_MODEL || "nex-agi/nex-n2.5-pro:free",
-  ];
-
-  let lastError: unknown;
-
-  for (const model of models) {
-    try {
-      return await requestOpenRouterProfile({ apiKey, baseUrl, model, transcript });
-    } catch (error) {
-      lastError = error;
-      console.warn(`OpenRouter model ${model} failed.`, error);
-    }
-  }
-
-  throw lastError ?? new Error("OpenRouter extraction failed");
-}
-
-async function requestOpenRouterProfile(input: {
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  transcript: string;
-}) {
-  const response = await fetch(`${input.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${input.apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-      "X-Title": "Kaamyaabi",
-    },
-    body: JSON.stringify({
-      model: input.model,
-      temperature: 0.1,
-      max_tokens: 500,
-      provider: {
-        require_parameters: true,
-      },
-      messages: [
-        {
-          role: "system",
-          content:
-            "Extract a Pakistani informal worker profile from WhatsApp text. Use sensible defaults only when the field is absent. Return JSON only.",
-        },
-        {
-          role: "user",
-          content: input.transcript,
-        },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "worker_profile",
-          strict: true,
-          schema: workerProfileJsonSchema,
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    aiUsage.openRouterProfileFailures += 1;
-    throw new Error(`OpenRouter returned ${response.status}`);
-  }
-
-  const json = (await response.json()) as OpenRouterChatResponse;
-  const content = json.choices?.[0]?.message?.content;
-
-  if (!content) {
-    aiUsage.openRouterProfileFailures += 1;
-    throw new Error("OpenRouter returned empty content");
-  }
-
-  aiUsage.openRouterProfileCalls += 1;
-  aiUsage.openRouterPromptTokens += json.usage?.prompt_tokens ?? 0;
-  aiUsage.openRouterCompletionTokens += json.usage?.completion_tokens ?? 0;
-  aiUsage.openRouterTotalTokens += json.usage?.total_tokens ?? 0;
-
-  return parseProfileJson(content);
-}
-
-async function extractProfileWithGemini(transcript: string) {
-  const apiKey = requireEnv("GEMINI_API_KEY");
-  const model = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: `Extract a worker profile from this WhatsApp message. Return JSON only with these keys: name, role, location, experienceYears, minimumSalaryPkr, skills, availability, languages.\n\nMessage:\n${transcript}`,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Gemini profile extraction returned ${response.status}`);
-  }
-
-  const json = (await response.json()) as GeminiGenerateContentResponse;
-  return parseProfileJson(extractGeminiText(json));
 }
 
 function parseProfileJson(content: string) {
   const jsonText = content
     .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```$/i, "")
+    .replace(/^\u0060\u0060\u0060json\s*/i, "")
+    .replace(/^\u0060\u0060\u0060\s*/i, "")
+    .replace(/\u0060\u0060\u0060$/i, "")
     .trim();
+  const value = JSON.parse(jsonText) as Record<string, unknown>;
 
-  return workerProfileSchema.parse(JSON.parse(jsonText));
+  return workerProfileSchema.parse({
+    name: textValue(value.name),
+    role: textValue(value.role),
+    location: textValue(value.location),
+    experienceYears: numberValue(value.experienceYears),
+    minimumSalaryPkr: numberValue(value.minimumSalaryPkr),
+    skills: stringList(value.skills),
+    availability: textValue(value.availability),
+    languages: stringList(value.languages),
+  });
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : "Not provided";
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return Math.round(value);
+  }
+  if (typeof value === "string") {
+    const number = Number(value.replace(/[^\d.]/g, ""));
+    if (Number.isFinite(number) && number >= 0) {
+      return Math.round(number);
+    }
+  }
+  return 0;
+}
+
+function stringList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return ["Not provided"];
+  }
+  const items = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : ["Not provided"];
 }
 
 function extractGeminiText(response: GeminiGenerateContentResponse) {
-  return (
-    response.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text ?? "")
-      .join("")
-      .trim() ?? ""
-  );
+  return response.candidates?.[0]?.content?.parts
+    ?.map((part) => part.text ?? "")
+    .join("") ?? "";
 }
 
-function buildFallbackProfile(transcript: string): WorkerProfile {
-  const salary = transcript.match(/(?:salary|pkr|rs|hazaar|k)\D*(\d{2,6})/i)?.[1];
-  const years = transcript.match(/(\d+)\s*(?:years?|saal|year)/i)?.[1];
+function profileFromTranscript(transcript: string): WorkerProfile {
+  const normalized = transcript.toLowerCase();
+  const yearsMatch = transcript.match(/(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:years?|saal|year)/i);
+  const salaryMatch = transcript.match(/(?:salary|pkr|rs|hazaar|k)\D*(\d{2,6})/i);
+  const locationMatch = transcript.match(/(?:[A-Z]-?\d+(?:\s+Markaz)?|Islamabad|Rawalpindi|Lahore|Karachi|Peshawar|Faisalabad)/i);
 
-  return {
-    name: "Ahmed Khan",
-    role: /driver|drive|gaari/i.test(transcript) ? "Driver" : "Worker",
-    location: /g-?9|g-?10/i.test(transcript)
-      ? "G-9/G-10 Islamabad"
-      : "Islamabad",
-    experienceYears: years ? Number(years) : 4,
-    minimumSalaryPkr: normalizeSalary(salary) ?? 40000,
-    skills: ["Manual driving", "Automatic driving", "City routes"],
-    availability: /monday|peer/i.test(transcript) ? "Monday" : "Immediately",
-    languages: ["Urdu", "Punjabi"],
+  const role = /(?:house\s+)?chef/i.test(transcript)
+    ? "House Chef"
+    : /react\s*native/i.test(transcript)
+      ? "React Native Developer"
+      : /driver|drive|gaari/i.test(transcript)
+        ? "Driver"
+        : "Not provided";
+
+  const skills = role === "House Chef"
+    ? ["Cooking"]
+    : role === "React Native Developer"
+      ? ["React Native"]
+      : role === "Driver"
+        ? ["Driving"]
+        : ["Not provided"];
+
+  return workerProfileSchema.parse({
+    name: "Not provided",
+    role,
+    location: locationMatch?.[0] ?? "Not provided",
+    experienceYears: yearsMatch ? wordNumber(yearsMatch[1]) : 0,
+    minimumSalaryPkr: salaryMatch ? normalizeSalary(salaryMatch[1]) : 0,
+    skills,
+    availability: /monday/i.test(normalized)
+      ? "Monday"
+      : /immediately|foran|fori/i.test(normalized)
+        ? "Immediately"
+        : "Not provided",
+    languages: ["Not provided"],
+  });
+}
+
+function wordNumber(value: string) {
+  const numbers: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
   };
+  return numbers[value.toLowerCase()] ?? Number(value);
 }
 
-function normalizeSalary(value: string | undefined) {
-  if (!value) {
-    return undefined;
-  }
-
+function normalizeSalary(value: string) {
   const number = Number(value);
-  if (Number.isNaN(number)) {
-    return undefined;
-  }
-
   return number < 1000 ? number * 1000 : number;
 }
 
-type OpenRouterChatResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-};
-
 type GeminiGenerateContentResponse = {
   candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
+    content?: { parts?: Array<{ text?: string }> };
   }>;
 };
