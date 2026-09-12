@@ -1,3 +1,5 @@
+import { handleWorkerMessage } from "@/lib/demo-agent";
+
 type WhatsAppWebhookEntry = {
   changes?: Array<{
     value?: {
@@ -8,6 +10,10 @@ type WhatsAppWebhookEntry = {
         type?: string;
         text?: {
           body?: string;
+        };
+        audio?: {
+          id?: string;
+          mime_type?: string;
         };
       }>;
       statuses?: Array<{
@@ -73,14 +79,7 @@ export async function POST(request: Request) {
     console.info("WhatsApp webhook events", events);
   }
 
-  await Promise.all(
-    messages.map((message) =>
-      sendWhatsAppText(
-        message.from,
-        "Assalam-o-Alaikum, I am Kaamyaabi. Send me a short voice note about your skills, city, and job experience, and I will help turn it into a worker profile.",
-      ),
-    ),
-  );
+  await Promise.all(messages.map(replyToWorker));
 
   return Response.json({ received: true });
 }
@@ -114,6 +113,22 @@ function extractWebhookEvents(
       }) ?? [],
     ) ?? []
   );
+}
+
+async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "message" }>) {
+  if (!message.from) {
+    return;
+  }
+
+  const replies = await handleWorkerMessage({
+    from: message.from,
+    type: message.type,
+    text: message.text,
+  });
+
+  for (const reply of replies) {
+    await sendWhatsAppText(message.from, reply);
+  }
 }
 
 async function sendWhatsAppText(to: string | undefined, body: string) {
