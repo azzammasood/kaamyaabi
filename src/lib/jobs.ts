@@ -37,6 +37,13 @@ export type ApplicantContact = {
   email?: string;
   name?: string;
   phone?: string;
+  verifiedIdentity?: {
+    email?: string;
+    emailVerified?: boolean;
+    provider: "auth0";
+    sub: string;
+    updatedAt: string;
+  };
   whatsappName?: string;
 };
 

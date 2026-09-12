@@ -23,6 +23,7 @@ import {
   runTrustAgent,
 } from "@/lib/trust-agent";
 import { assessWorkerTrust, formatTrustBadge } from "@/lib/trust";
+import { getVerifiedIdentity } from "@/lib/identity";
 
 export type AgentReply =
   | string
@@ -90,6 +91,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
 
   const language = session.language ?? "english";
   session.contact = mergeApplicantContact(session.contact, message.contact, text);
+  session.contact = attachVerifiedIdentity(session.contact, message.from);
   sessions.set(message.from, session);
 
   if (["reset", "restart"].includes(normalized)) {
@@ -103,6 +105,10 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
 
   if (["usage", "ai status"].includes(normalized)) {
     return [getAiUsageSummary()];
+  }
+
+  if (["verify", "identity", "auth0"].includes(normalized)) {
+    return [identityVerificationMessage(message.from, language)];
   }
 
   if (["jobs", "find jobs", "job listings"].includes(normalized)) {
@@ -265,7 +271,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     sessions.set(message.from, session);
 
     return [
-      buildCvMessage(session.profile, language),
+      buildCvMessage(session.profile, language, session.contact),
       ...buildJobListingReplies(jobs, session.profile, language),
     ];
   }
@@ -447,6 +453,9 @@ function isKnownShortCommand(normalized: string) {
     "status",
     "usage",
     "ai status",
+    "verify",
+    "identity",
+    "auth0",
   ].includes(normalized);
 }
 
@@ -466,6 +475,31 @@ function mergeApplicantContact(
     name: incoming?.name || current?.name,
     phone: incoming?.phone || current?.phone,
     whatsappName: incoming?.whatsappName || current?.whatsappName,
+  };
+}
+
+function attachVerifiedIdentity(
+  contact: ApplicantContact | undefined,
+  phone: string,
+): ApplicantContact {
+  const identity = getVerifiedIdentity(phone);
+
+  if (!identity) {
+    return contact ?? { phone };
+  }
+
+  return {
+    ...contact,
+    email: contact?.email || identity.email,
+    name: contact?.name || identity.name,
+    phone: contact?.phone || phone,
+    verifiedIdentity: {
+      email: identity.email,
+      emailVerified: identity.emailVerified,
+      provider: identity.provider,
+      sub: identity.sub,
+      updatedAt: identity.updatedAt,
+    },
   };
 }
 
@@ -802,7 +836,15 @@ function buildProfileReviewReply(
   };
 }
 
-function buildCvMessage(profile: WorkerProfile, language: LanguageCode) {
+function buildCvMessage(
+  profile: WorkerProfile,
+  language: LanguageCode,
+  contact?: ApplicantContact,
+) {
+  const verification = contact?.verifiedIdentity
+    ? "Auth0 verified identity linked"
+    : "trusted worker badge pending";
+
   if (language === "urdu") {
     return `CV tayyar:
 
@@ -813,7 +855,7 @@ Experience: ${profile.experienceYears} years
 Skills: ${profile.skills.join(", ")}
 Languages: ${profile.languages.join(", ")}
 Availability: ${profile.availability}
-Verification: trusted worker badge pending`;
+Verification: ${verification}`;
   }
 
   if (language === "pashto") {
@@ -826,7 +868,7 @@ Experience: ${profile.experienceYears} years
 Skills: ${profile.skills.join(", ")}
 Languages: ${profile.languages.join(", ")}
 Availability: ${profile.availability}
-Verification: trusted worker badge pending`;
+Verification: ${verification}`;
   }
 
   return `CV ready:
@@ -838,7 +880,7 @@ Experience: ${profile.experienceYears} years
 Skills: ${profile.skills.join(", ")}
 Languages: ${profile.languages.join(", ")}
 Availability: ${profile.availability}
-Verification: trusted worker badge pending`;
+Verification: ${verification}`;
 }
 
 function rejectJob(phone: string, session: Session, text: string) {
@@ -1097,6 +1139,24 @@ function needsProfileMessage(language: LanguageCode) {
       return "Lomray worker profile jora kra. Kar, tajriba, area, minimum salary, aw availability rawalega.";
     default:
       return "Please make your worker profile first. Send the work you want, experience, area, minimum salary, and availability.";
+  }
+}
+
+function identityVerificationMessage(phone: string, language: LanguageCode) {
+  const baseUrl =
+    process.env.NEXT_PUBLIC_APP_URL ||
+    process.env.APP_BASE_URL ||
+    process.env.AUTH0_BASE_URL ||
+    "http://localhost:3000";
+  const link = `${baseUrl.replace(/\/$/, "")}/identity?phone=${encodeURIComponent(phone)}`;
+
+  switch (language) {
+    case "urdu":
+      return `Identity verify karne ke liye yeh link open karein:\n${link}\n\nLogin ke baad WhatsApp par STATUS bhejein.`;
+    case "pashto":
+      return `Identity verify la para da link open ka:\n${link}\n\nLogin na pas WhatsApp ke STATUS rawalega.`;
+    default:
+      return `Verify your identity here:\n${link}\n\nAfter login, come back to WhatsApp and send STATUS.`;
   }
 }
 

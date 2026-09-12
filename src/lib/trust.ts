@@ -53,6 +53,17 @@ export function assessWorkerTrust(
     warnings.push("email missing");
   }
 
+  if (contact?.verifiedIdentity) {
+    score += 20;
+    signals.push("Auth0 identity verified");
+    if (contact.verifiedIdentity.emailVerified) {
+      score += 5;
+      signals.push("email verified by Auth0");
+    }
+  } else {
+    warnings.push("Auth0 identity not linked");
+  }
+
   if (profile?.role && !isMissingText(profile.role)) {
     score += 10;
     signals.push("role present");
