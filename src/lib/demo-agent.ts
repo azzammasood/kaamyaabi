@@ -54,6 +54,7 @@ export type WorkerMessage = {
   type?: string;
   text?: string;
   transcript?: string;
+  sendProgress?: (body: string) => Promise<void>;
   contact?: ApplicantContact;
 };
 
@@ -100,6 +101,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       return [needsProfileMessage(language)];
     }
 
+    await sendProgress(message, progressMessage("jobs", language));
     const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
     session.rejectedJobIds = [];
@@ -114,6 +116,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       return [needsProfileMessage(language)];
     }
 
+    await sendProgress(message, progressMessage("direct", language));
     const jobs = await runJobHuntingAgent(session.profile, {
       preferDirectContact: true,
     });
@@ -160,7 +163,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
   }
 
   if (isApplyCommand(normalized) && session.profile && session.stage === "jobs_shown") {
-    return beginApplication(message.from, session, text);
+    return beginApplication(message.from, session, text, message);
   }
 
   if (isApplyCommand(normalized)) {
@@ -170,6 +173,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
   if (normalized.startsWith("watch")) {
     if (session.profile) {
       const autoApply = /\bapply\b/.test(normalized);
+      await sendProgress(message, progressMessage("watch", language));
       const jobs = await runJobHuntingAgent(session.profile, {
         preferDirectContact: true,
       });
@@ -185,7 +189,12 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       sessions.set(message.from, session);
 
       if (autoApply && jobs[0]) {
-        const application = await beginApplication(message.from, session, "APPLY 1");
+        const application = await beginApplication(
+          message.from,
+          session,
+          "APPLY 1",
+          message,
+        );
 
         return [
           watchApplyActiveMessage(language),
@@ -207,6 +216,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
+    await sendProgress(message, progressMessage("jobs", language));
     const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
     session.rejectedJobIds = [];
@@ -239,6 +249,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       ];
     }
 
+    await sendProgress(message, progressMessage("profile", language));
     const profile = await extractWorkerProfile(transcript);
     session.profile = profile;
     session.stage = "profile_review";
@@ -265,6 +276,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
       return [buildMissingDetailsMessage(missingFields, language)];
     }
 
+    await sendProgress(message, progressMessage("profile", language));
     const profile = await extractWorkerProfile(text);
     session.profile = profile;
     session.stage = "profile_review";
@@ -403,6 +415,56 @@ function isDirectContactCommand(normalized: string) {
   return /^(contacts?|direct jobs?|direct contact|opportunities|opportunity search)$/.test(
     normalized,
   );
+}
+
+async function sendProgress(
+  message: Pick<WorkerMessage, "sendProgress"> | undefined,
+  body: string,
+) {
+  if (!message?.sendProgress) {
+    return;
+  }
+
+  try {
+    await message.sendProgress(body);
+  } catch (error) {
+    console.warn("Progress message failed", error);
+  }
+}
+
+function progressMessage(
+  stage: "profile" | "jobs" | "direct" | "watch" | "apply",
+  language: LanguageCode,
+) {
+  const messages = {
+    profile: {
+      english: "Thinking through your profile...",
+      urdu: "Aapki profile samajh raha hoon...",
+      pashto: "Sta profile samjawom...",
+    },
+    jobs: {
+      english: "Scavenging jobs and ranking the safest matches...",
+      urdu: "Jobs dhoond raha hoon aur safe matches rank kar raha hoon...",
+      pashto: "Jobs ltom aw safe matches rank kawom...",
+    },
+    direct: {
+      english: "Scouting direct-contact opportunities...",
+      urdu: "Direct-contact opportunities dhoond raha hoon...",
+      pashto: "Direct-contact opportunities ltom...",
+    },
+    watch: {
+      english: "Setting up the watcher and checking fresh listings...",
+      urdu: "Watcher set kar raha hoon aur fresh listings check kar raha hoon...",
+      pashto: "Watcher set kawom aw fresh listings check kawom...",
+    },
+    apply: {
+      english: "Preparing the safest application path...",
+      urdu: "Sab se safe application path tayyar kar raha hoon...",
+      pashto: "Da apply safe path tayyarawom...",
+    },
+  };
+
+  return messages[stage][language];
 }
 
 function hasJobIntent(text: string) {
@@ -655,7 +717,12 @@ function rejectJob(phone: string, session: Session, text: string) {
   ];
 }
 
-async function beginApplication(phone: string, session: Session, text: string) {
+async function beginApplication(
+  phone: string,
+  session: Session,
+  text: string,
+  message?: WorkerMessage,
+) {
   if (!session.profile) {
     return [
       "Please make your worker profile first. Send the work you want, experience, area, minimum salary, and availability.",
@@ -689,6 +756,8 @@ async function beginApplication(phone: string, session: Session, text: string) {
       ),
     ];
   }
+
+  await sendProgress(message, progressMessage("apply", session.language ?? "english"));
 
   const application = await runJobApplicationAgent({
     applicantContact: session.contact ?? { phone },

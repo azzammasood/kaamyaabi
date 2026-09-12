@@ -35,6 +35,21 @@ export async function sendWhatsAppButtons(
   });
 }
 
+export async function sendWhatsAppTyping(messageId: string | undefined) {
+  if (!messageId) {
+    return;
+  }
+
+  return sendWhatsAppMessage(undefined, {
+    messaging_product: "whatsapp",
+    status: "read",
+    message_id: messageId,
+    typing_indicator: {
+      type: "text",
+    },
+  });
+}
+
 async function sendWhatsAppMessage(
   to: string | undefined,
   payload: Record<string, unknown>,
@@ -42,7 +57,7 @@ async function sendWhatsAppMessage(
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
-  if (!to || !token || !phoneNumberId) {
+  if ((!to && !payload.message_id) || !token || !phoneNumberId) {
     console.warn("Skipping WhatsApp reply because configuration is incomplete.");
     return;
   }

@@ -1,7 +1,11 @@
 import { handleWorkerMessage, runWatchChecks } from "@/lib/demo-agent";
 import { transcribeAudio } from "@/lib/ai";
 import { downloadWhatsAppMedia } from "@/lib/whatsapp";
-import { sendWhatsAppButtons, sendWhatsAppText } from "@/lib/whatsapp-send";
+import {
+  sendWhatsAppButtons,
+  sendWhatsAppText,
+  sendWhatsAppTyping,
+} from "@/lib/whatsapp-send";
 
 type WhatsAppWebhookEntry = {
   changes?: Array<{
@@ -155,9 +159,13 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
 
   let transcript: string | undefined;
 
+  await sendWhatsAppTyping(message.id);
+
   if (message.type === "audio" && message.audioId) {
     try {
+      await sendWhatsAppText(message.from, "Listening to the voice note...");
       const audio = await downloadWhatsAppMedia(message.audioId);
+      await sendWhatsAppTyping(message.id);
       transcript = await transcribeAudio({
         bytes: audio.bytes,
         mimeType: message.audioMimeType || audio.mimeType,
@@ -172,6 +180,10 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
     type: message.type,
     text: message.text,
     transcript,
+    sendProgress: async (body) => {
+      await sendWhatsAppTyping(message.id);
+      await sendWhatsAppText(message.from, body);
+    },
     contact: {
       name: message.contactName,
       phone: message.contactPhone || message.from,
@@ -180,6 +192,8 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
   });
 
   for (const reply of replies) {
+    await sendWhatsAppTyping(message.id);
+
     if (typeof reply === "string") {
       await sendWhatsAppText(message.from, reply);
     } else {
