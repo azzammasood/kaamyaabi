@@ -1,4 +1,6 @@
 import { handleWorkerMessage } from "@/lib/demo-agent";
+import { transcribeAudio } from "@/lib/ai";
+import { downloadWhatsAppMedia } from "@/lib/whatsapp";
 
 type WhatsAppWebhookEntry = {
   changes?: Array<{
@@ -38,6 +40,8 @@ type WhatsAppWebhookEvent =
       id: string | undefined;
       type: string | undefined;
       text: string | undefined;
+      audioId: string | undefined;
+      audioMimeType: string | undefined;
       timestamp: string | undefined;
     }
   | {
@@ -97,6 +101,8 @@ function extractWebhookEvents(
             id: message.id,
             type: message.type,
             text: message.text?.body,
+            audioId: message.audio?.id,
+            audioMimeType: message.audio?.mime_type,
             timestamp: message.timestamp,
           })) ?? [];
 
@@ -120,10 +126,30 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
     return;
   }
 
+  let transcript: string | undefined;
+
+  if (message.type === "audio" && message.audioId) {
+    await sendWhatsAppText(
+      message.from,
+      "Voice note received. Transcribing and building your worker profile now.",
+    );
+
+    try {
+      const audio = await downloadWhatsAppMedia(message.audioId);
+      transcript = await transcribeAudio({
+        bytes: audio.bytes,
+        mimeType: message.audioMimeType || audio.mimeType,
+      });
+    } catch (error) {
+      console.error("Voice note processing failed", error);
+    }
+  }
+
   const replies = await handleWorkerMessage({
     from: message.from,
     type: message.type,
     text: message.text,
+    transcript,
   });
 
   for (const reply of replies) {

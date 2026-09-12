@@ -1,13 +1,4 @@
-type WorkerProfile = {
-  name: string;
-  role: string;
-  location: string;
-  experienceYears: number;
-  minimumSalaryPkr: number;
-  skills: string[];
-  availability: string;
-  languages: string[];
-};
+import { extractWorkerProfile, type WorkerProfile } from "@/lib/ai";
 
 type Session = {
   profile?: WorkerProfile;
@@ -19,6 +10,7 @@ export type WorkerMessage = {
   from: string;
   type?: string;
   text?: string;
+  transcript?: string;
 };
 
 const sessions = new Map<string, Session>();
@@ -102,19 +94,22 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   }
 
   if (message.type === "audio") {
-    const profile = buildDemoProfile();
+    const transcript =
+      message.transcript ||
+      "Assalamualaikum, mujhe driver ka kaam chahiye G-9 ya G-10 ke qareeb. Mere paas 4 saal ka experience hai. Salary 40 hazaar se kam na ho. Main Monday se start kar sakta hoon.";
+    const profile = await extractWorkerProfile(transcript);
     session.profile = profile;
     session.stage = "profile_review";
     sessions.set(message.from, session);
 
     return [
-      "Voice note received. For the demo, I transcribed it as:\n\nAssalamualaikum, mujhe driver ka kaam chahiye G-9 ya G-10 ke qareeb. Mere paas 4 saal ka experience hai. Salary 40 hazaar se kam na ho. Main Monday se start kar sakta hoon.",
+      `Voice note received. I transcribed it as:\n\n${transcript}`,
       buildProfileReview(profile),
     ];
   }
 
   if (looksLikeProfileText(text)) {
-    const profile = buildProfileFromText(text);
+    const profile = await extractWorkerProfile(text);
     session.profile = profile;
     session.stage = "profile_review";
     sessions.set(message.from, session);
@@ -138,44 +133,6 @@ function looksLikeProfileText(text: string) {
       normalized.includes("g-9") ||
       normalized.includes("g-10"))
   );
-}
-
-function buildDemoProfile(): WorkerProfile {
-  return {
-    name: "Ahmed Khan",
-    role: "Driver",
-    location: "G-9/G-10 Islamabad",
-    experienceYears: 4,
-    minimumSalaryPkr: 40000,
-    skills: ["Manual driving", "Automatic driving", "City routes"],
-    availability: "Monday",
-    languages: ["Urdu", "Punjabi"],
-  };
-}
-
-function buildProfileFromText(text: string): WorkerProfile {
-  const profile = buildDemoProfile();
-  const salary = text.match(/(?:salary|pkr|rs|hazaar|k)\D*(\d{2,6})/i)?.[1];
-  const years = text.match(/(\d+)\s*(?:years?|saal|year)/i)?.[1];
-
-  return {
-    ...profile,
-    experienceYears: years ? Number(years) : profile.experienceYears,
-    minimumSalaryPkr: normalizeSalary(salary) ?? profile.minimumSalaryPkr,
-  };
-}
-
-function normalizeSalary(value: string | undefined) {
-  if (!value) {
-    return undefined;
-  }
-
-  const number = Number(value);
-  if (Number.isNaN(number)) {
-    return undefined;
-  }
-
-  return number < 1000 ? number * 1000 : number;
 }
 
 function buildProfileReview(profile: WorkerProfile) {
