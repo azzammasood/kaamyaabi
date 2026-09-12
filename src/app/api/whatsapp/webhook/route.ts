@@ -5,6 +5,12 @@ import { downloadWhatsAppMedia } from "@/lib/whatsapp";
 type WhatsAppWebhookEntry = {
   changes?: Array<{
     value?: {
+      contacts?: Array<{
+        profile?: {
+          name?: string;
+        };
+        wa_id?: string;
+      }>;
       messages?: Array<{
         from?: string;
         id?: string;
@@ -42,6 +48,8 @@ type WhatsAppWebhookEvent =
       text: string | undefined;
       audioId: string | undefined;
       audioMimeType: string | undefined;
+      contactName: string | undefined;
+      contactPhone: string | undefined;
       timestamp: string | undefined;
     }
   | {
@@ -95,16 +103,24 @@ function extractWebhookEvents(
     payload.entry?.flatMap((entry) =>
       entry.changes?.flatMap((change) => {
         const messages =
-          change.value?.messages?.map((message) => ({
-            kind: "message" as const,
-            from: message.from,
-            id: message.id,
-            type: message.type,
-            text: message.text?.body,
-            audioId: message.audio?.id,
-            audioMimeType: message.audio?.mime_type,
-            timestamp: message.timestamp,
-          })) ?? [];
+          change.value?.messages?.map((message) => {
+            const contact = change.value?.contacts?.find(
+              (candidate) => candidate.wa_id === message.from,
+            );
+
+            return {
+              kind: "message" as const,
+              from: message.from,
+              id: message.id,
+              type: message.type,
+              text: message.text?.body,
+              audioId: message.audio?.id,
+              audioMimeType: message.audio?.mime_type,
+              contactName: contact?.profile?.name,
+              contactPhone: contact?.wa_id || message.from,
+              timestamp: message.timestamp,
+            };
+          }) ?? [];
 
         const statuses =
           change.value?.statuses?.map((status) => ({
@@ -145,6 +161,11 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
     type: message.type,
     text: message.text,
     transcript,
+    contact: {
+      name: message.contactName,
+      phone: message.contactPhone || message.from,
+      whatsappName: message.contactName,
+    },
   });
 
   for (const reply of replies) {

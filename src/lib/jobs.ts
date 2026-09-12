@@ -27,13 +27,27 @@ export type JobListing = {
 
 export type ApplicationResult = {
   messages: string[];
-  provider: "boringproject" | "manual";
-  status: "queued" | "needs_manual_submit" | "failed";
+  provider: "boringproject" | "email" | "manual";
+  status: "queued" | "sent" | "needs_manual_submit" | "failed";
   externalSessionId?: string;
 };
 
-type JobSearchOptions = {
+export type ApplicantContact = {
+  email?: string;
+  name?: string;
+  phone?: string;
+  whatsappName?: string;
+};
+
+export type JobSearchOptions = {
   preferDirectContact?: boolean;
+};
+
+type EmployerContact = {
+  email?: string;
+  phone?: string;
+  sourceLabel: string;
+  sourceUrl?: string;
 };
 
 export type JobSearchStatus = {
@@ -51,11 +65,16 @@ export type JobSearchStatus = {
 const applicationStatus = {
   boringProjectCalls: 0,
   boringProjectFailures: 0,
+  contactDiscoveryCalls: 0,
+  contactDiscoveryFailures: 0,
+  emailSendCalls: 0,
+  emailSendFailures: 0,
   manualHandoffs: 0,
   lastProvider: "manual" as ApplicationResult["provider"],
   lastStatus: "needs_manual_submit" as ApplicationResult["status"],
   lastSessionId: undefined as string | undefined,
   lastError: undefined as string | undefined,
+  lastFallbackPath: undefined as string | undefined,
 };
 
 type JobPlatform =
@@ -441,18 +460,26 @@ export async function startJobApplication(
   job: JobListing,
   profile: WorkerProfile,
   language: LanguageCode = "english",
+  applicantContact: ApplicantContact = {},
 ): Promise<ApplicationResult> {
   if (job.applicationMethod === "unavailable") {
-    applicationStatus.manualHandoffs += 1;
-    applicationStatus.lastProvider = "manual";
-    applicationStatus.lastStatus = "needs_manual_submit";
+    const discoveredContact = await discoverEmployerContact(job, profile);
 
-    const application = formatApplicationSummary(job, profile, language);
-    return {
-      messages: [application.started, application.offer].filter(Boolean),
-      provider: "manual",
-      status: "needs_manual_submit",
-    };
+    if (discoveredContact) {
+      return sendOrDraftEmailApplication({
+        applicantContact,
+        contact: discoveredContact,
+        job,
+        language,
+        path: "company contact discovered for fallback listing",
+        profile,
+      });
+    }
+
+    return manualApplicationHandoff(job, profile, language, [
+      "demo fallback",
+      "company contact discovery failed",
+    ]);
   }
 
   const boringProjectKey = process.env.BORING_PROJECT_API_KEY;
@@ -472,20 +499,350 @@ export async function startJobApplication(
     }
   }
 
+  const directContact = parseEmployerContact(job.contactHint, job.url, job.sourceLabel);
+
+  if (directContact?.email) {
+    return sendOrDraftEmailApplication({
+      applicantContact,
+      contact: directContact,
+      job,
+      language,
+      path: "email from job listing",
+      profile,
+    });
+  }
+
+  if (directContact?.phone) {
+    return directPhoneHandoff(job, profile, language, directContact, applicantContact);
+  }
+
+  if (job.applicationMethod === "ats_link" || job.applicationMethod === "job_board_link") {
+    return manualApplicationHandoff(job, profile, language, [
+      boringProjectKey && !candidateProfileId
+        ? "auto-apply provider missing candidate profile id"
+        : "auto-apply provider not configured",
+      "official listing apply route available",
+    ]);
+  }
+
+  const discoveredContact = await discoverEmployerContact(job, profile);
+
+  if (discoveredContact?.email) {
+    return sendOrDraftEmailApplication({
+      applicantContact,
+      contact: discoveredContact,
+      job,
+      language,
+      path: "company email discovered by Exa",
+      profile,
+    });
+  }
+
+  if (discoveredContact?.phone) {
+    return directPhoneHandoff(
+      job,
+      profile,
+      language,
+      discoveredContact,
+      applicantContact,
+    );
+  }
+
+  return manualApplicationHandoff(job, profile, language, [
+    boringProjectKey && !candidateProfileId
+      ? "auto-apply provider missing candidate profile id"
+      : "auto-apply provider not configured",
+    "no direct contact found",
+    "company contact discovery returned no usable contact",
+  ]);
+}
+
+function manualApplicationHandoff(
+  job: JobListing,
+  profile: WorkerProfile,
+  language: LanguageCode,
+  paths: string[],
+): ApplicationResult {
   applicationStatus.manualHandoffs += 1;
   applicationStatus.lastProvider = "manual";
   applicationStatus.lastStatus = "needs_manual_submit";
+  applicationStatus.lastFallbackPath = paths.join(" -> ");
 
   const application = formatApplicationSummary(job, profile, language);
-
   return {
     messages: [
-      boringProjectKey && !candidateProfileId
-        ? autoApplyMissingCandidateMessage(language)
-        : autoApplyNotConfiguredMessage(language),
+      fallbackPathMessage(language, paths),
       application.started,
       application.offer,
     ].filter(Boolean),
+    provider: "manual",
+    status: "needs_manual_submit",
+  };
+}
+
+async function discoverEmployerContact(
+  job: JobListing,
+  profile: WorkerProfile,
+): Promise<EmployerContact | undefined> {
+  const apiKey = process.env.EXA_API_KEY;
+
+  if (!apiKey || job.source === "demo") {
+    return undefined;
+  }
+
+  applicationStatus.contactDiscoveryCalls += 1;
+
+  try {
+    const query = `${job.employer} ${job.title} ${profile.location} careers contact email phone WhatsApp hiring Pakistan`;
+    const response = await fetch("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({
+        query,
+        type: "auto",
+        numResults: 5,
+        contents: {
+          text: { maxCharacters: 1200 },
+          summary: {
+            query:
+              "Find a hiring, HR, careers, contact, email, phone, or WhatsApp route for this employer. Prefer official pages.",
+          },
+          livecrawl: "preferred",
+          livecrawlTimeout: 1000,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Exa contact discovery returned ${response.status}`);
+    }
+
+    const json = (await response.json()) as ExaSearchResponse;
+    jobSearchStatus.liveCostDollars += json.costDollars?.total ?? 0;
+
+    for (const result of json.results ?? []) {
+      const body = `${result.summary ?? ""} ${result.text ?? ""}`;
+      const contact = parseEmployerContact(
+        body,
+        result.url,
+        result.title || "Company contact page",
+      );
+
+      if (contact?.email || contact?.phone) {
+        applicationStatus.lastFallbackPath = "company contact discovery";
+        return contact;
+      }
+    }
+  } catch (error) {
+    applicationStatus.contactDiscoveryFailures += 1;
+    applicationStatus.lastError =
+      error instanceof Error ? error.message : "Unknown contact discovery error";
+  }
+
+  return undefined;
+}
+
+function parseEmployerContact(
+  value: string | undefined,
+  sourceUrl: string | undefined,
+  sourceLabel: string,
+): EmployerContact | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const email = value
+    .match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
+    ?.trim();
+  const phone = value
+    .match(
+      /\b(?:phone|whatsapp|contact|call|mobile)?\D{0,25}((?:\+92|0092|0)3\d{2}[\s.-]?\d{7})\b/i,
+    )?.[1]
+    ?.trim();
+
+  if (!email && !phone) {
+    return undefined;
+  }
+
+  return {
+    email,
+    phone,
+    sourceLabel,
+    sourceUrl,
+  };
+}
+
+async function sendOrDraftEmailApplication(input: {
+  applicantContact: ApplicantContact;
+  contact: EmployerContact;
+  job: JobListing;
+  language: LanguageCode;
+  path: string;
+  profile: WorkerProfile;
+}): Promise<ApplicationResult> {
+  if (!input.contact.email) {
+    return directPhoneHandoff(
+      input.job,
+      input.profile,
+      input.language,
+      input.contact,
+      input.applicantContact,
+    );
+  }
+
+  const subject = `Application for ${input.job.title} - ${input.profile.name}`;
+  const body = buildEmailApplicationBody(input);
+  const emailResult = await sendEmailIfConfigured({
+    body,
+    replyTo: input.applicantContact.email,
+    subject,
+    to: input.contact.email,
+  });
+
+  if (emailResult.sent) {
+    applicationStatus.lastProvider = "email";
+    applicationStatus.lastStatus = "sent";
+    applicationStatus.lastFallbackPath = input.path;
+
+    return {
+      messages: [
+        emailSentMessage(input.language, input.contact.email, input.job, emailResult.id),
+      ],
+      provider: "email",
+      status: "sent",
+      externalSessionId: emailResult.id,
+    };
+  }
+
+  applicationStatus.manualHandoffs += 1;
+  applicationStatus.lastProvider = "manual";
+  applicationStatus.lastStatus = "needs_manual_submit";
+  applicationStatus.lastFallbackPath = `${input.path} -> email draft`;
+
+  return {
+    messages: [
+      emailDraftMessage(input.language, input.contact.email, subject, body, input.path),
+    ],
+    provider: "manual",
+    status: "needs_manual_submit",
+  };
+}
+
+async function sendEmailIfConfigured(input: {
+  body: string;
+  replyTo?: string;
+  subject: string;
+  to: string;
+}) {
+  const apiKey = process.env.RESEND_API_KEY;
+  const from = process.env.APPLICATION_EMAIL_FROM;
+
+  if (!apiKey || !from) {
+    return { sent: false as const };
+  }
+
+  applicationStatus.emailSendCalls += 1;
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: input.to,
+        subject: input.subject,
+        text: input.body,
+        reply_to: input.replyTo,
+      }),
+    });
+    const json = (await response.json().catch(() => ({}))) as { id?: string };
+
+    if (!response.ok) {
+      throw new Error(`Resend returned ${response.status}`);
+    }
+
+    return { id: json.id, sent: true as const };
+  } catch (error) {
+    applicationStatus.emailSendFailures += 1;
+    applicationStatus.lastError =
+      error instanceof Error ? error.message : "Unknown email send error";
+    return { sent: false as const };
+  }
+}
+
+function buildEmailApplicationBody(input: {
+  applicantContact: ApplicantContact;
+  contact: EmployerContact;
+  job: JobListing;
+  language: LanguageCode;
+  path: string;
+  profile: WorkerProfile;
+}) {
+  const salaryAsk = `PKR ${Math.max(
+    input.profile.minimumSalaryPkr,
+    input.job.salaryPkr ?? 0,
+  ).toLocaleString("en-PK")}`;
+  const applicantName =
+    input.profile.name !== "Not provided"
+      ? input.profile.name
+      : input.applicantContact.name || input.applicantContact.whatsappName || "Applicant";
+
+  return `${buildApplicationMessage(input.job, {
+    ...input.profile,
+    name: applicantName,
+  }, salaryAsk, input.language)}
+
+Contact:
+WhatsApp/phone: ${input.applicantContact.phone ?? "Not provided"}
+Email: ${input.applicantContact.email ?? "Not provided"}
+
+Listing/source:
+${input.job.url ?? input.contact.sourceUrl ?? "Not provided"}
+
+Sent via Kaamyaabi. Path used: ${input.path}.`;
+}
+
+function directPhoneHandoff(
+  job: JobListing,
+  profile: WorkerProfile,
+  language: LanguageCode,
+  contact: EmployerContact,
+  applicantContact: ApplicantContact,
+): ApplicationResult {
+  applicationStatus.manualHandoffs += 1;
+  applicationStatus.lastProvider = "manual";
+  applicationStatus.lastStatus = "needs_manual_submit";
+  applicationStatus.lastFallbackPath = "direct phone or WhatsApp contact";
+
+  const salaryAsk = `PKR ${Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0).toLocaleString(
+    "en-PK",
+  )}`;
+
+  return {
+    messages: [
+      phoneContactMessage(
+        language,
+        contact,
+        buildApplicationMessage(
+          job,
+          {
+            ...profile,
+            name:
+              profile.name !== "Not provided"
+                ? profile.name
+                : applicantContact.name || applicantContact.whatsappName || profile.name,
+          },
+          salaryAsk,
+          language,
+        ),
+      ),
+    ],
     provider: "manual",
     status: "needs_manual_submit",
   };
@@ -713,25 +1070,135 @@ function formatApplicationMethod(method: JobListing["applicationMethod"]) {
   }
 }
 
-function autoApplyMissingCandidateMessage(language: LanguageCode) {
+function fallbackPathMessage(language: LanguageCode, paths: string[]) {
+  const path = paths.filter(Boolean).join(" -> ");
+
   switch (language) {
     case "urdu":
-      return "Auto-apply provider configured hai, lekin BORING_PROJECT_CANDIDATE_PROFILE_ID missing hai.";
+      return `Application path check: ${path}`;
     case "pashto":
-      return "Auto-apply provider configured da, kho BORING_PROJECT_CANDIDATE_PROFILE_ID missing da.";
+      return `Application path check: ${path}`;
     default:
-      return "Auto-apply provider is configured, but BORING_PROJECT_CANDIDATE_PROFILE_ID is missing.";
+      return `Application path check: ${path}`;
   }
 }
 
-function autoApplyNotConfiguredMessage(language: LanguageCode) {
+function emailSentMessage(
+  language: LanguageCode,
+  to: string,
+  job: JobListing,
+  emailId: string | undefined,
+) {
   switch (language) {
     case "urdu":
-      return "Auto-apply provider abhi configured nahi, is liye maine reliable application handoff tayyar kiya.";
+      return `Email application send ho gayi.
+
+To: ${to}
+Job: ${job.title}
+Email id: ${emailId ?? "not returned"}
+
+Agar employer reply kare, message yahan paste karein.`;
     case "pashto":
-      return "Auto-apply provider la configured na da, no ma reliable application handoff tayyar ko.";
+      return `Email application send shwa.
+
+To: ${to}
+Job: ${job.title}
+Email id: ${emailId ?? "not returned"}
+
+Ka employer reply oko, message dalta paste ka.`;
     default:
-      return "Auto-apply provider is not configured yet, so I prepared the reliable application handoff.";
+      return `Email application sent.
+
+To: ${to}
+Job: ${job.title}
+Email id: ${emailId ?? "not returned"}
+
+If the employer replies, paste their message here.`;
+  }
+}
+
+function emailDraftMessage(
+  language: LanguageCode,
+  to: string,
+  subject: string,
+  body: string,
+  path: string,
+) {
+  switch (language) {
+    case "urdu":
+      return `Company email mil gayi, lekin email sending configured nahi hai.
+
+Path used: ${path}
+To: ${to}
+Subject: ${subject}
+
+Email draft:
+${body}
+
+Send karne ke baad DONE reply karein.`;
+    case "pashto":
+      return `Company email paida shwa, kho email sending configured na da.
+
+Path used: ${path}
+To: ${to}
+Subject: ${subject}
+
+Email draft:
+${body}
+
+Send na pas DONE reply oka.`;
+    default:
+      return `Company email found, but email sending is not configured.
+
+Path used: ${path}
+To: ${to}
+Subject: ${subject}
+
+Email draft:
+${body}
+
+Reply DONE after sending.`;
+  }
+}
+
+function phoneContactMessage(
+  language: LanguageCode,
+  contact: EmployerContact,
+  applicationMessage: string,
+) {
+  const destination = contact.phone ?? contact.sourceUrl ?? contact.sourceLabel;
+
+  switch (language) {
+    case "urdu":
+      return `Direct contact mil gaya.
+
+Contact: ${destination}
+Source: ${contact.sourceLabel}
+
+Yeh message bhejein:
+${applicationMessage}
+
+Message bhejne ke baad DONE reply karein.`;
+    case "pashto":
+      return `Direct contact paida sho.
+
+Contact: ${destination}
+Source: ${contact.sourceLabel}
+
+Da message rawalega:
+${applicationMessage}
+
+Message na pas DONE reply oka.`;
+    default:
+      return `Direct contact found.
+
+Contact: ${destination}
+Source: ${contact.sourceLabel}
+
+Send this message:
+${applicationMessage}
+
+Reply DONE after sending.`;
   }
 }
 

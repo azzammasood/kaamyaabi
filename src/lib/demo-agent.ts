@@ -1,11 +1,12 @@
 import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai";
+import { runJobApplicationAgent } from "@/lib/job-application-agent";
+import { runJobHuntingAgent } from "@/lib/job-hunting-agent";
 import {
-  findJobsForProfile,
   formatJobList,
   getApplicationStatus,
   getJobBySelection,
   getJobSearchStatus,
-  startJobApplication,
+  type ApplicantContact,
   type JobListing,
 } from "@/lib/jobs";
 import {
@@ -18,9 +19,10 @@ type Session = {
   applications?: Array<{
     jobId: string;
     jobTitle: string;
-    provider: "boringproject" | "manual";
+    provider: "boringproject" | "email" | "manual";
     submittedAt: string;
   }>;
+  contact?: ApplicantContact;
   jobs?: JobListing[];
   language?: LanguageCode;
   profile?: WorkerProfile;
@@ -39,6 +41,7 @@ export type WorkerMessage = {
   type?: string;
   text?: string;
   transcript?: string;
+  contact?: ApplicantContact;
 };
 
 const globalForSessions = globalThis as typeof globalThis & {
@@ -67,6 +70,8 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   }
 
   const language = session.language ?? "english";
+  session.contact = mergeApplicantContact(session.contact, message.contact, text);
+  sessions.set(message.from, session);
 
   if (["reset", "restart"].includes(normalized)) {
     sessions.set(message.from, { stage: "new", language });
@@ -82,7 +87,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
       return [needsProfileMessage(language)];
     }
 
-    const jobs = await findJobsForProfile(session.profile);
+    const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
@@ -95,7 +100,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
       return [needsProfileMessage(language)];
     }
 
-    const jobs = await findJobsForProfile(session.profile, {
+    const jobs = await runJobHuntingAgent(session.profile, {
       preferDirectContact: true,
     });
     session.jobs = jobs;
@@ -146,7 +151,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   if (normalized.startsWith("watch")) {
     if (session.profile) {
       const autoApply = /\bapply\b/.test(normalized);
-      const jobs = await findJobsForProfile(session.profile, {
+      const jobs = await runJobHuntingAgent(session.profile, {
         preferDirectContact: true,
       });
       session.jobs = jobs;
@@ -182,7 +187,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
-    const jobs = await findJobsForProfile(session.profile);
+    const jobs = await runJobHuntingAgent(session.profile);
     session.jobs = jobs;
     sessions.set(message.from, session);
 
@@ -263,7 +268,7 @@ export async function runWatchChecks(
     }
 
     const language = session.language ?? "english";
-    const jobs = await findJobsForProfile(session.profile, {
+    const jobs = await runJobHuntingAgent(session.profile, {
       preferDirectContact: true,
     });
     const topJob = jobs[0];
@@ -319,6 +324,25 @@ function isKnownShortCommand(normalized: string) {
     "usage",
     "ai status",
   ].includes(normalized);
+}
+
+function mergeApplicantContact(
+  current: ApplicantContact | undefined,
+  incoming: ApplicantContact | undefined,
+  text: string,
+): ApplicantContact {
+  const emailFromText = text
+    .match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]
+    ?.trim();
+
+  return {
+    ...current,
+    ...incoming,
+    email: incoming?.email || emailFromText || current?.email,
+    name: incoming?.name || current?.name,
+    phone: incoming?.phone || current?.phone,
+    whatsappName: incoming?.whatsappName || current?.whatsappName,
+  };
 }
 
 function isApplyCommand(normalized: string) {
@@ -534,13 +558,14 @@ async function beginApplication(phone: string, session: Session, text: string) {
   session.selectedJob = job;
   sessions.set(phone, session);
 
-  const application = await startJobApplication(
+  const application = await runJobApplicationAgent({
+    applicantContact: session.contact ?? { phone },
     job,
-    session.profile,
-    session.language ?? "english",
-  );
+    language: session.language ?? "english",
+    profile: session.profile,
+  });
 
-  if (application.status === "queued") {
+  if (application.status === "queued" || application.status === "sent") {
     session.stage = "applied";
     session.applications = [
       ...(session.applications ?? []),
@@ -588,9 +613,14 @@ Application provider:
 Auto-apply: ${process.env.BORING_PROJECT_API_KEY ? "BoringProject configured" : "manual handoff only"}
 BoringProject calls: ${applyStatus.boringProjectCalls}
 BoringProject failures: ${applyStatus.boringProjectFailures}
+Contact discovery calls: ${applyStatus.contactDiscoveryCalls}
+Contact discovery failures: ${applyStatus.contactDiscoveryFailures}
+Email send calls: ${applyStatus.emailSendCalls}
+Email send failures: ${applyStatus.emailSendFailures}
 Manual handoffs: ${applyStatus.manualHandoffs}
 Last application provider: ${applyStatus.lastProvider}
 Last application status: ${applyStatus.lastStatus}
+Last fallback path: ${applyStatus.lastFallbackPath ?? "none"}
 Last provider session: ${applyStatus.lastSessionId ?? "none"}
 Last provider error: ${applyStatus.lastError ?? "none"}`,
   ].join("\n\n");
