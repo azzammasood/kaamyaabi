@@ -1,4 +1,4 @@
-import { extractWorkerProfile, type WorkerProfile } from "@/lib/ai";
+import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai";
 
 type Session = {
   profile?: WorkerProfile;
@@ -54,6 +54,16 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
+  if (["status", "usage", "ai status"].includes(normalized)) {
+    return [getAiStatus()];
+  }
+
+  if (["no", "n", "edit"].includes(normalized) && session.stage === "profile_review") {
+    return [
+      "No problem. Send the corrected details in one message.\n\nExample:\nDriver, G-9 Islamabad, 4 years experience, minimum salary 40000, available Monday.",
+    ];
+  }
+
   if (
     ["apply", "confirm"].includes(normalized) &&
     session.profile &&
@@ -98,10 +108,19 @@ export async function handleWorkerMessage(message: WorkerMessage) {
       message.transcript ||
       "Assalamualaikum, mujhe driver ka kaam chahiye G-9 ya G-10 ke qareeb. Mere paas 4 saal ka experience hai. Salary 40 hazaar se kam na ho. Main Monday se start kar sakta hoon.";
 
-    if (!isJobProfileInput(transcript)) {
+    if (!hasJobIntent(transcript)) {
       return [
         `Voice note received. I transcribed it as:\n\n${transcript}`,
         buildOutOfScopeMessage(),
+      ];
+    }
+
+    const missingFields = getMissingProfileFields(transcript);
+
+    if (missingFields.length > 0) {
+      return [
+        `Voice note received. I transcribed it as:\n\n${transcript}`,
+        buildMissingDetailsMessage(missingFields),
       ];
     }
 
@@ -116,11 +135,17 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
-  if (text && !isKnownShortCommand(normalized) && !isJobProfileInput(text)) {
+  if (text && !isKnownShortCommand(normalized) && !hasJobIntent(text)) {
     return [buildOutOfScopeMessage()];
   }
 
-  if (isJobProfileInput(text)) {
+  if (hasJobIntent(text)) {
+    const missingFields = getMissingProfileFields(text);
+
+    if (missingFields.length > 0) {
+      return [buildMissingDetailsMessage(missingFields)];
+    }
+
     const profile = await extractWorkerProfile(text);
     session.profile = profile;
     session.stage = "profile_review";
@@ -140,28 +165,82 @@ function isKnownShortCommand(normalized: string) {
   );
 }
 
-function isJobProfileInput(text: string) {
-  const normalized = text.toLowerCase();
-  const hasWorkIntent =
+function hasJobIntent(text: string) {
+  return (
+    text.length > 8 &&
     /\b(job|work|kaam|naukri|rozgar|driver|react|developer|cook|chef|guard|maid|cleaner|electrician|plumber|delivery|sales|teacher|accountant)\b/i.test(
       text,
-    );
-  const hasProfileDetail =
-    /\b(experience|saal|years?|salary|pkr|rs|hazaar|available|start|skills?|city|islamabad|rawalpindi|g-?9|g-?10)\b/i.test(
-      text,
-    );
-
-  return (
-    text.length > 20 &&
-    hasWorkIntent &&
-    (hasProfileDetail ||
-      normalized.includes("mujhe") ||
-      normalized.includes("i want"))
+    )
   );
 }
 
 function buildOutOfScopeMessage() {
   return "I can help with job search only. Please send one voice note or text with the work you want, your experience, area, minimum salary, and availability.";
+}
+
+function getMissingProfileFields(text: string) {
+  const missing: string[] = [];
+
+  if (!hasRole(text)) {
+    missing.push("work/role");
+  }
+
+  if (!hasLocation(text)) {
+    missing.push("area/city");
+  }
+
+  if (!hasExperience(text)) {
+    missing.push("experience");
+  }
+
+  if (!hasSalary(text)) {
+    missing.push("minimum salary");
+  }
+
+  if (!hasAvailability(text)) {
+    missing.push("availability");
+  }
+
+  return missing;
+}
+
+function hasRole(text: string) {
+  return /\b(driver|react\s*native|reactnative|react|developer|cook|chef|guard|maid|cleaner|electrician|plumber|delivery|sales|teacher|accountant)\b/i.test(
+    text,
+  );
+}
+
+function hasLocation(text: string) {
+  return /\b(islamabad|rawalpindi|lahore|karachi|peshawar|g-?\d+|f-?\d+|i-?\d+|near|qareeb|area|city)\b/i.test(
+    text,
+  );
+}
+
+function hasExperience(text: string) {
+  return /\b(experience|experienced|saal|years?|mahine|months?|fresh|fresher)\b/i.test(
+    text,
+  );
+}
+
+function hasSalary(text: string) {
+  return /(\b(salary|pkr|rs|rupees?|hazaar|minimum|kam na ho)\b.*\d{2,6})|(\d{2,6}.*\b(salary|pkr|rs|rupees?|hazaar|minimum|kam na ho)\b)|(\b\d+\s*k\b)|(\b\d{5,6}\b)/i.test(
+    text,
+  );
+}
+
+function hasAvailability(text: string) {
+  return /\b(available|availability|start|monday|tuesday|wednesday|thursday|friday|saturday|sunday|peer|mangal|budh|jumma|hafta|immediately|foran|kal|tomorrow)\b/i.test(
+    text,
+  );
+}
+
+function buildMissingDetailsMessage(missingFields: string[]) {
+  return `I can help, but I need a few more details before making your profile.
+
+Missing: ${missingFields.join(", ")}
+
+Please send one message like:
+Electrician, Islamabad, 3 years experience, minimum salary 45000, available Monday.`;
 }
 
 function buildProfileReview(profile: WorkerProfile) {
