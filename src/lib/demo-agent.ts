@@ -349,6 +349,9 @@ function buildStatusMessage() {
 Provider: ${jobStatus.provider === "exa" ? "Exa live search" : "Seeded demo fallback"}
 Exa live calls: ${jobStatus.liveCalls}
 Exa failures: ${jobStatus.liveFailures}
+Live results seen: ${jobStatus.liveResultsSeen}
+Duplicates removed: ${jobStatus.duplicateResultsRemoved}
+Sources queried: ${jobStatus.sourcesQueried.length > 0 ? jobStatus.sourcesQueried.join(", ") : "none yet"}
 Exa cost seen: $${jobStatus.liveCostDollars.toFixed(4)}
 Last live search: ${jobStatus.lastSearchAt ?? "none"}
 Last Exa error: ${jobStatus.lastError ?? "none"}
