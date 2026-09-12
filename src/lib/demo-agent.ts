@@ -560,6 +560,10 @@ function getMissingExtractedProfileFields(profile: WorkerProfile) {
     missing.push("availability");
   }
 
+  if (!profile.skills.some((skill) => !/^not (provided|specified)$/i.test(skill))) {
+    missing.push("skills");
+  }
+
   return missing;
 }
 
@@ -570,7 +574,7 @@ function hasRole(text: string) {
 }
 
 function hasLocation(text: string) {
-  return /\b(islamabad|rawalpindi|lahore|karachi|peshawar|g-?\d+|f-?\d+|i-?\d+|near|qareeb|area|city)\b/i.test(
+  return /\b(islamabad|rawalpindi|lahore|karachi|peshawar|g-?\d+|f-?\d+|i-?\d+)\b/i.test(
     text,
   );
 }
@@ -626,7 +630,7 @@ function buildProfileReview(
   contact?: ApplicantContact,
 ) {
   const workerTrust = assessWorkerTrust(profile, contact);
-  const trustLine = `Worker trust: ${formatTrustBadge(workerTrust)}${
+  const trustLine = `Worker check: ${formatTrustBadge(workerTrust)}${
     workerTrust.warnings.length > 0
       ? `\nTrust notes: ${workerTrust.warnings.join("; ")}`
       : ""
@@ -838,7 +842,7 @@ function trustBlockedMessage(
   jobTrust: Parameters<typeof formatTrustBadge>[0],
   language: LanguageCode,
 ) {
-  const details = `Worker trust: ${formatTrustBadge(workerTrust)}
+  const details = `Worker check: ${formatTrustBadge(workerTrust)}
 ${workerTrust.warnings.length > 0 ? `Worker notes: ${workerTrust.warnings.join("; ")}\n` : ""}Job trust: ${formatTrustBadge(jobTrust)}
 ${jobTrust.warnings.length > 0 ? `Job notes: ${jobTrust.warnings.join("; ")}` : ""}`;
 
@@ -1007,17 +1011,37 @@ function buildJobListingReplies(
     intro.trim(),
     ...formatJobMessages(jobs, language).map((body, index) => ({
       kind: "buttons" as const,
-      body: trimButtonBody(
-        `${body}\n\nRecommended salary ask: PKR ${profile.minimumSalaryPkr.toLocaleString(
-          "en-PK",
-        )}+`,
-      ),
+      body: trimButtonBody(`${body}${formatSalaryAskLine(profile, jobs[index], language)}`),
       buttons: [
         { id: `APPROVE_${index + 1}`, title: "Approve" },
         { id: `REJECT_${index + 1}`, title: "Reject" },
       ],
     })),
   ];
+}
+
+function formatSalaryAskLine(
+  profile: WorkerProfile,
+  job: JobListing | undefined,
+  language: LanguageCode,
+) {
+  const salaryAsk = profile.minimumSalaryPkr > 0 ? profile.minimumSalaryPkr : job?.salaryPkr;
+
+  if (!salaryAsk || salaryAsk <= 0) {
+    return "";
+  }
+
+  const formatted = salaryAsk.toLocaleString("en-PK");
+
+  if (language === "urdu") {
+    return `\n\nSalary ask: PKR ${formatted}+`;
+  }
+
+  if (language === "pashto") {
+    return `\n\nSalary ask: PKR ${formatted}+`;
+  }
+
+  return `\n\nRecommended salary ask: PKR ${formatted}+`;
 }
 
 function trimButtonBody(body: string) {

@@ -197,7 +197,7 @@ export function getAiUsageSummary() {
           ? "Transcript parser fallback"
           : "No completed profile call yet";
 
-  return `AI usage since server start:
+  return `AI usage since this server restart:
 
 Mode: ${primary}
 Actually used for profile: ${effectiveProfileAi}
@@ -216,7 +216,9 @@ Profile model: ${geminiModel}
 Profile calls: ${geminiUsage.profileCalls}
 Profile failures: ${geminiUsage.profileFailures}
 Voice transcription calls: ${geminiUsage.transcriptionCalls}
-Transcript parser fallbacks: ${geminiUsage.deterministicFallbacks}`;
+Transcript parser fallbacks: ${geminiUsage.deterministicFallbacks}
+
+Note: these counters reset whenever npm run dev restarts.`;
 }
 
 function shouldUseOpenRouter() {
@@ -414,14 +416,30 @@ function profileFromTranscript(transcript: string): WorkerProfile {
     ? "House Chef"
     : /react\s*native/i.test(transcript)
       ? "React Native Developer"
-      : /driver|drive|gaari/i.test(transcript)
+      : /electrician|bijli/i.test(transcript)
+        ? "Electrician"
+        : /plumber/i.test(transcript)
+          ? "Plumber"
+          : /guard|security/i.test(transcript)
+            ? "Security Guard"
+            : /cook/i.test(transcript)
+              ? "Cook"
+              : /driver|drive|gaari/i.test(transcript)
         ? "Driver"
         : "Not provided";
 
   const skills = role === "House Chef"
-    ? ["Cooking"]
+    ? ["Cooking", "Kitchen work"]
     : role === "React Native Developer"
       ? ["React Native"]
+      : role === "Electrician"
+        ? ["Electrical work"]
+        : role === "Plumber"
+          ? ["Plumbing"]
+          : role === "Security Guard"
+            ? ["Security"]
+            : role === "Cook"
+              ? ["Cooking"]
       : role === "Driver"
         ? ["Driving"]
         : ["Not provided"];
@@ -433,13 +451,21 @@ function profileFromTranscript(transcript: string): WorkerProfile {
     experienceYears: yearsMatch ? wordNumber(yearsMatch[1]) : 0,
     minimumSalaryPkr: salaryMatch ? normalizeSalary(salaryMatch[1]) : 0,
     skills,
-    availability: /monday/i.test(normalized)
-      ? "Monday"
-      : /immediately|foran|fori/i.test(normalized)
-        ? "Immediately"
-        : "Not provided",
+    availability: extractAvailability(normalized),
     languages: ["Not provided"],
   });
+}
+
+function extractAvailability(normalized: string) {
+  const dayMatch = normalized.match(
+    /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|peer|mangal|budh|jumma|hafta|itwar)\b/i,
+  )?.[1];
+
+  if (dayMatch) {
+    return dayMatch[0].toUpperCase() + dayMatch.slice(1).toLowerCase();
+  }
+
+  return /immediately|foran|fori/i.test(normalized) ? "Immediately" : "Not provided";
 }
 
 function wordNumber(value: string) {

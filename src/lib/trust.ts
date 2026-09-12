@@ -25,7 +25,7 @@ export function assessWorkerTrust(
   profile: WorkerProfile | undefined,
   contact: ApplicantContact | undefined,
 ): TrustAssessment {
-  let score = 35;
+  let score = 25;
   const signals: string[] = [];
   const warnings: string[] = [];
 
@@ -36,29 +36,31 @@ export function assessWorkerTrust(
     warnings.push("phone missing");
   }
 
-  if (profile?.name && !/^not specified$/i.test(profile.name)) {
-    score += 15;
+  if (profile?.name && !isMissingText(profile.name)) {
+    score += 10;
     signals.push("name present");
   } else if (contact?.whatsappName || contact?.name) {
-    score += 10;
+    score += 8;
     signals.push("WhatsApp display name present");
   } else {
     warnings.push("name missing");
   }
 
   if (contact?.email) {
-    score += 10;
+    score += 8;
     signals.push("email present");
+  } else {
+    warnings.push("email missing");
   }
 
-  if (profile?.role && !/^not specified$/i.test(profile.role)) {
+  if (profile?.role && !isMissingText(profile.role)) {
     score += 10;
     signals.push("role present");
   } else {
     warnings.push("role missing");
   }
 
-  if (profile?.location && !/^not specified$/i.test(profile.location)) {
+  if (profile?.location && !isMissingText(profile.location)) {
     score += 10;
     signals.push("location present");
   } else {
@@ -75,6 +77,13 @@ export function assessWorkerTrust(
   if (profile && profile.experienceYears >= 0) {
     score += 5;
     signals.push("experience present");
+  }
+
+  if (profile?.skills.some((skill) => !isMissingText(skill))) {
+    score += 7;
+    signals.push("skills present");
+  } else {
+    warnings.push("skills missing");
   }
 
   return finalizeAssessment(score, signals, warnings, warnings.length >= 4);
@@ -161,6 +170,10 @@ export function formatTrustBadge(assessment: TrustAssessment) {
         : "Blocked";
 
   return `${label} (${assessment.score}/100)`;
+}
+
+function isMissingText(value: string) {
+  return /^not (provided|specified)$/i.test(value.trim());
 }
 
 function finalizeAssessment(

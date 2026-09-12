@@ -1063,6 +1063,8 @@ function formatJobCard(
       : job.applicationMethod !== "unavailable" && job.url
         ? `\nApply route: ${formatApplicationMethod(job.applicationMethod)}`
         : "\nApplication route: not available for this demo fallback";
+  const summary = formatReadableSummary(job.summary);
+  const fit = job.why.map(formatReadableFitReason).join("; ");
 
   if (language === "urdu") {
     return `*${index}. ${job.title}*
@@ -1074,9 +1076,9 @@ Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
 Trust: ${formatTrustBadge(trust)}${warningLine}
 
-${job.summary}${applyLine}
+${summary}${applyLine}
 
-Fit: ${job.why.join("; ")}${linkLine}`;
+Fit: ${fit}${linkLine}`;
   }
 
   if (language === "pashto") {
@@ -1089,9 +1091,9 @@ Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
 Trust: ${formatTrustBadge(trust)}${warningLine}
 
-${job.summary}${applyLine}
+${summary}${applyLine}
 
-Fit: ${job.why.join("; ")}${linkLine}`;
+Fit: ${fit}${linkLine}`;
   }
 
   return `*${index}. ${job.title}*
@@ -1103,9 +1105,28 @@ Source: ${job.sourceLabel}
 Reliability: ${job.reliability}
 Trust: ${formatTrustBadge(trust)}${warningLine}
 
-${job.summary}${applyLine}
+${summary}${applyLine}
 
-Fit: ${job.why.join("; ")}${linkLine}`;
+Fit: ${fit}${linkLine}`;
+}
+
+function formatReadableSummary(summary: string) {
+  return truncate(
+    cleanSummary(summary)
+      .replace(/^job title\s*:\s*/i, "")
+      .replace(/\bcompany(?:\/organization)?\s*:\s*/gi, "Company: ")
+      .replace(/\blocation\s*:\s*/gi, "Location: ")
+      .replace(/\bsalary\s*:\s*/gi, "Salary: ")
+      .replace(/\bapplication\/contact route\s*:\s*/gi, "Application route: "),
+    220,
+  );
+}
+
+function formatReadableFitReason(reason: string) {
+  return reason
+    .replace(/^Location:\s*/i, "location ")
+    .replace(/^Salary\s+/i, "salary ")
+    .replace(/^Found from\s+/i, "found from ");
 }
 
 function formatSalary(salaryPkr: number | null) {
