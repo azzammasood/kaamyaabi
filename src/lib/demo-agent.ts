@@ -22,7 +22,12 @@ export type WorkerMessage = {
   transcript?: string;
 };
 
-const sessions = new Map<string, Session>();
+const globalForSessions = globalThis as typeof globalThis & {
+  __kaamyaabiSessions?: Map<string, Session>;
+};
+
+const sessions = globalForSessions.__kaamyaabiSessions ?? new Map<string, Session>();
+globalForSessions.__kaamyaabiSessions = sessions;
 
 export async function handleWorkerMessage(message: WorkerMessage) {
   const session = sessions.get(message.from) ?? { stage: "new" };
@@ -61,18 +66,6 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
-  if (
-    ["apply", "confirm"].includes(normalized) &&
-    session.profile &&
-    session.stage === "jobs_shown"
-  ) {
-    return beginApplication(message.from, session, text);
-  }
-
-  if (normalized === "apply" && session.profile) {
-    return beginApplication(message.from, session, text);
-  }
-
   if (normalized === "confirm" && session.stage === "offer_made") {
     session.stage = "confirmed";
     sessions.set(message.from, session);
@@ -80,6 +73,16 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     return [
       "Confirmed. I told the employer you will start Monday at 9 AM.\n\nI will ask them for exact address and contact person.",
       "Watcher also ready. Send: WATCH driver G-9 50000\nand I will keep looking for better verified jobs.",
+    ];
+  }
+
+  if (isApplyCommand(normalized) && session.profile && session.stage === "jobs_shown") {
+    return beginApplication(message.from, session, text);
+  }
+
+  if (isApplyCommand(normalized)) {
+    return [
+      "I do not have your current job matches yet. Reply YES after your profile, or send JOBS to refresh the list, then reply APPLY 1.",
     ];
   }
 
@@ -158,6 +161,10 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 }
 
 function isKnownShortCommand(normalized: string) {
+  if (isApplyCommand(normalized)) {
+    return true;
+  }
+
   return [
     "hi",
     "hello",
@@ -174,6 +181,10 @@ function isKnownShortCommand(normalized: string) {
     "usage",
     "ai status",
   ].includes(normalized);
+}
+
+function isApplyCommand(normalized: string) {
+  return /^(apply|confirm)(\s+[1-3])?$/.test(normalized);
 }
 
 function hasJobIntent(text: string) {
