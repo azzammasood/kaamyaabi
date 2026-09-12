@@ -62,15 +62,16 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
-  if (normalized === "apply" && session.profile) {
-    session.stage = "offer_made";
-    session.selectedJobId = jobs[0].id;
-    sessions.set(message.from, session);
+  if (
+    ["apply", "confirm"].includes(normalized) &&
+    session.profile &&
+    session.stage === "jobs_shown"
+  ) {
+    return beginNegotiation(message.from, session);
+  }
 
-    return [
-      "Got it. I will message the employer as your representative and negotiate within your limits.",
-      "Employer simulation:\nPosted salary was PKR 38,000.\nI negotiated using your 4 years of driving experience and nearby location.\n\nGood news: final offer is PKR 45,000, Monday start, Sunday off.\n\nShould I confirm?\nReply CONFIRM.",
-    ];
+  if (normalized === "apply" && session.profile) {
+    return beginNegotiation(message.from, session);
   }
 
   if (normalized === "confirm" && session.stage === "offer_made") {
@@ -214,5 +215,16 @@ Best match: ${bestJob.title} in ${bestJob.location}, PKR ${bestJob.salaryPkr.toL
 It is close to you, but below your minimum salary of PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}.
 
 Should I negotiate for PKR 45,000?
-Reply APPLY.`;
+Reply APPLY or CONFIRM.`;
+}
+
+function beginNegotiation(phone: string, session: Session) {
+  session.stage = "offer_made";
+  session.selectedJobId = jobs[0].id;
+  sessions.set(phone, session);
+
+  return [
+    "Got it. I will message the employer as your representative and negotiate within your limits.",
+    "Employer simulation:\nPosted salary was PKR 38,000.\nI negotiated using your 4 years of driving experience and nearby location.\n\nGood news: final offer is PKR 45,000, Monday start, Sunday off.\n\nShould I confirm?\nReply CONFIRM.",
+  ];
 }
