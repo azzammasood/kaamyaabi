@@ -25,6 +25,23 @@ type WhatsAppWebhookPayload = {
   entry?: WhatsAppWebhookEntry[];
 };
 
+type WhatsAppWebhookEvent =
+  | {
+      kind: "message";
+      from: string | undefined;
+      id: string | undefined;
+      type: string | undefined;
+      text: string | undefined;
+      timestamp: string | undefined;
+    }
+  | {
+      kind: "status";
+      id: string | undefined;
+      recipientId: string | undefined;
+      status: string | undefined;
+      timestamp: string | undefined;
+    };
+
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
@@ -50,21 +67,33 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const payload = (await request.json()) as WhatsAppWebhookPayload;
   const events = extractWebhookEvents(payload);
+  const messages = events.filter((event) => event.kind === "message");
 
   if (events.length > 0) {
     console.info("WhatsApp webhook events", events);
   }
 
+  await Promise.all(
+    messages.map((message) =>
+      sendWhatsAppText(
+        message.from,
+        "Assalam-o-Alaikum, I am Kaamyaabi. Send me a short voice note about your skills, city, and job experience, and I will help turn it into a worker profile.",
+      ),
+    ),
+  );
+
   return Response.json({ received: true });
 }
 
-function extractWebhookEvents(payload: WhatsAppWebhookPayload) {
+function extractWebhookEvents(
+  payload: WhatsAppWebhookPayload,
+): WhatsAppWebhookEvent[] {
   return (
     payload.entry?.flatMap((entry) =>
       entry.changes?.flatMap((change) => {
         const messages =
           change.value?.messages?.map((message) => ({
-            kind: "message",
+            kind: "message" as const,
             from: message.from,
             id: message.id,
             type: message.type,
@@ -74,7 +103,7 @@ function extractWebhookEvents(payload: WhatsAppWebhookPayload) {
 
         const statuses =
           change.value?.statuses?.map((status) => ({
-            kind: "status",
+            kind: "status" as const,
             id: status.id,
             recipientId: status.recipient_id,
             status: status.status,
@@ -85,4 +114,42 @@ function extractWebhookEvents(payload: WhatsAppWebhookPayload) {
       }) ?? [],
     ) ?? []
   );
+}
+
+async function sendWhatsAppText(to: string | undefined, body: string) {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if (!to || !token || !phoneNumberId) {
+    console.warn("Skipping WhatsApp reply because configuration is incomplete.");
+    return;
+  }
+
+  const response = await fetch(
+    `https://graph.facebook.com/v26.0/${phoneNumberId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: {
+          preview_url: false,
+          body,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error("WhatsApp reply failed", {
+      status: response.status,
+      error,
+    });
+  }
 }
