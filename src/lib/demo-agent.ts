@@ -97,6 +97,14 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     const transcript =
       message.transcript ||
       "Assalamualaikum, mujhe driver ka kaam chahiye G-9 ya G-10 ke qareeb. Mere paas 4 saal ka experience hai. Salary 40 hazaar se kam na ho. Main Monday se start kar sakta hoon.";
+
+    if (!isJobProfileInput(transcript)) {
+      return [
+        `Voice note received. I transcribed it as:\n\n${transcript}`,
+        buildOutOfScopeMessage(),
+      ];
+    }
+
     const profile = await extractWorkerProfile(transcript);
     session.profile = profile;
     session.stage = "profile_review";
@@ -108,7 +116,11 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
-  if (looksLikeProfileText(text)) {
+  if (text && !isKnownShortCommand(normalized) && !isJobProfileInput(text)) {
+    return [buildOutOfScopeMessage()];
+  }
+
+  if (isJobProfileInput(text)) {
     const profile = await extractWorkerProfile(text);
     session.profile = profile;
     session.stage = "profile_review";
@@ -122,17 +134,34 @@ export async function handleWorkerMessage(message: WorkerMessage) {
   ];
 }
 
-function looksLikeProfileText(text: string) {
-  const normalized = text.toLowerCase();
-  return (
-    text.length > 25 &&
-    (normalized.includes("driver") ||
-      normalized.includes("kaam") ||
-      normalized.includes("experience") ||
-      normalized.includes("salary") ||
-      normalized.includes("g-9") ||
-      normalized.includes("g-10"))
+function isKnownShortCommand(normalized: string) {
+  return ["hi", "hello", "hey", "yes", "y", "no", "apply", "confirm"].includes(
+    normalized,
   );
+}
+
+function isJobProfileInput(text: string) {
+  const normalized = text.toLowerCase();
+  const hasWorkIntent =
+    /\b(job|work|kaam|naukri|rozgar|driver|react|developer|cook|chef|guard|maid|cleaner|electrician|plumber|delivery|sales|teacher|accountant)\b/i.test(
+      text,
+    );
+  const hasProfileDetail =
+    /\b(experience|saal|years?|salary|pkr|rs|hazaar|available|start|skills?|city|islamabad|rawalpindi|g-?9|g-?10)\b/i.test(
+      text,
+    );
+
+  return (
+    text.length > 20 &&
+    hasWorkIntent &&
+    (hasProfileDetail ||
+      normalized.includes("mujhe") ||
+      normalized.includes("i want"))
+  );
+}
+
+function buildOutOfScopeMessage() {
+  return "I can help with job search only. Please send one voice note or text with the work you want, your experience, area, minimum salary, and availability.";
 }
 
 function buildProfileReview(profile: WorkerProfile) {
