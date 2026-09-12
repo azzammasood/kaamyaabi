@@ -360,8 +360,12 @@ export function formatApplicationSummary(
   job: JobListing,
   profile: WorkerProfile,
   language: LanguageCode = "english",
+  paths: string[] = [],
 ) {
-  const targetSalary = Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0);
+  const targetSalary =
+    profile.minimumSalaryPkr > 0
+      ? Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0)
+      : job.salaryPkr ?? 0;
   const salaryAsk = `PKR ${targetSalary.toLocaleString("en-PK")}`;
   const applicationMessage = buildApplicationMessage(job, profile, salaryAsk, language);
 
@@ -388,81 +392,61 @@ I will not pretend to apply to it. Send JOBS again and choose a live listing wit
     job.applicationMethod === "contact" && job.contactHint
       ? `Contact/apply here: ${job.contactHint}`
       : `Open the real ${job.sourceLabel} application page: ${job.url}`;
+  const pathSummary = formatPipelineSummary(paths, job, language);
 
   if (language === "urdu") {
     return {
       targetSalary,
-      started: `Real application packet tayyar
+      started: `${pathSummary}
 
-${formatJobCard(job, 1, language)}
+Next step:
+${actionLine}
 
-Worker CV:
-${profile.name} - ${profile.role}
-${profile.experienceYears} years experience
-Skills: ${profile.skills.join(", ")}
-Location: ${profile.location}
-Available: ${profile.availability}
-Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
-
-${actionLine}`,
-      offer: `Yeh message employer/listing par send/apply karein:
+Job: ${job.title}
+Company: ${job.employer}
+Salary ask: ${targetSalary > 0 ? salaryAsk : "Ask employer first"}`,
+      offer: `Employer ko yeh short message bhejein:
 
 ${applicationMessage}
 
-Apply ya message bhejne ke baad DONE reply karein.
-
-Agar site extra sawaal pooche, yahan copy kar dein.`,
+Apply/message ke baad DONE reply karein. Agar site extra sawaal pooche, yahan copy kar dein.`,
     };
   }
 
   if (language === "pashto") {
     return {
       targetSalary,
-      started: `Real application packet tayyar da
+      started: `${pathSummary}
 
-${formatJobCard(job, 1, language)}
+Next step:
+${actionLine}
 
-Worker CV:
-${profile.name} - ${profile.role}
-${profile.experienceYears} years experience
-Skills: ${profile.skills.join(", ")}
-Location: ${profile.location}
-Available: ${profile.availability}
-Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
-
-${actionLine}`,
-      offer: `Da message employer/listing ta send/apply oka:
+Job: ${job.title}
+Company: ${job.employer}
+Salary ask: ${targetSalary > 0 ? salaryAsk : "Lomray employer na salary tapos ka"}`,
+      offer: `Employer ta da short message rawalega:
 
 ${applicationMessage}
 
-Apply ya message na pas DONE reply oka.
-
-Ka site extra pokhtane okri, hagha dalta copy ka.`,
+Apply/message na pas DONE reply oka. Ka site extra pokhtane okri, hagha dalta copy ka.`,
     };
   }
 
   return {
     targetSalary,
-    started: `Real application packet ready
+    started: `${pathSummary}
 
-${formatJobCard(job, 1, language)}
+Next step:
+${actionLine}
 
-Worker CV:
-${profile.name} - ${profile.role}
-${profile.experienceYears} years experience
-Skills: ${profile.skills.join(", ")}
-Location: ${profile.location}
-Available: ${profile.availability}
-Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
-
-${actionLine}`,
-    offer: `Send/apply with this message:
+Job: ${job.title}
+Company: ${job.employer}
+Salary ask: ${targetSalary > 0 ? salaryAsk : "Ask employer first"}`,
+    offer: `Send this short message to the employer:
 
 ${applicationMessage}
 
-After you submit or message the employer, reply DONE.
-
-If the site asks extra questions, copy them here and I will help answer.`,
+After you submit or message the employer, reply DONE. If the site asks extra questions, copy them here.`,
   };
 }
 
@@ -578,10 +562,9 @@ function manualApplicationHandoff(
   applicationStatus.lastStatus = "needs_manual_submit";
   applicationStatus.lastFallbackPath = paths.join(" -> ");
 
-  const application = formatApplicationSummary(job, profile, language);
+  const application = formatApplicationSummary(job, profile, language, paths);
   return {
     messages: [
-      fallbackPathMessage(language, paths),
       application.started,
       application.offer,
     ].filter(Boolean),
@@ -979,14 +962,13 @@ I will treat the webhook result as final: submitted, needs input, or failed.`,
     applicationStatus.lastError =
       error instanceof Error ? error.message : "Unknown BoringProject error";
 
-    const application = formatApplicationSummary(
-      input.job,
-      input.profile,
-      input.language,
-    );
+    const application = formatApplicationSummary(input.job, input.profile, input.language, [
+      "auto-apply failed",
+      "official listing apply route available",
+    ]);
     return {
       messages: [
-        `Auto-apply failed, so I prepared the manual application packet instead.
+        `Auto-apply did not work, so I prepared a manual path instead.
 
 Reason: ${applicationStatus.lastError}`,
         application.started,
@@ -1148,16 +1130,50 @@ function formatApplicationMethod(method: JobListing["applicationMethod"]) {
   }
 }
 
-function fallbackPathMessage(language: LanguageCode, paths: string[]) {
-  const path = paths.filter(Boolean).join(" -> ");
+function formatPipelineSummary(
+  paths: string[],
+  job: JobListing,
+  language: LanguageCode,
+) {
+  const readableSteps = paths.length > 0 ? paths : ["checked available apply routes"];
+  const lines = readableSteps.map((step, index) => `${index + 1}. ${formatPathStep(step)}`);
 
   switch (language) {
     case "urdu":
-      return `Application path check: ${path}`;
+      return `Application pipeline:
+${lines.join("\n")}
+Result: ${formatApplicationMethod(job.applicationMethod)} use karein.`;
     case "pashto":
-      return `Application path check: ${path}`;
+      return `Application pipeline:
+${lines.join("\n")}
+Result: ${formatApplicationMethod(job.applicationMethod)} use ka.`;
     default:
-      return `Application path check: ${path}`;
+      return `Application pipeline:
+${lines.join("\n")}
+Result: use the ${formatApplicationMethod(job.applicationMethod)}.`;
+  }
+}
+
+function formatPathStep(step: string) {
+  switch (step) {
+    case "auto-apply provider not configured":
+      return "Auto-apply provider checked: not configured yet";
+    case "auto-apply provider missing candidate profile id":
+      return "Auto-apply provider checked: candidate profile missing";
+    case "official listing apply route available":
+      return "Official listing/apply page found";
+    case "no direct contact found":
+      return "Direct phone/email checked: not found";
+    case "company contact discovery returned no usable contact":
+      return "Company contact search checked: no usable contact";
+    case "auto-apply failed":
+      return "Auto-apply tried but failed";
+    case "demo fallback":
+      return "Demo fallback listing checked";
+    case "company contact discovery failed":
+      return "Company contact search failed";
+    default:
+      return step;
   }
 }
 

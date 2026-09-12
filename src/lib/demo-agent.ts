@@ -259,7 +259,9 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     }
 
     await sendProgress(message, progressMessage("profile", language));
-    const profile = await extractWorkerProfile(transcript);
+    const profile = await extractWorkerProfile(transcript, {
+      preferredProvider: "gemini",
+    });
     const profileMissingFields = getMissingExtractedProfileFields(profile);
 
     if (profileMissingFields.length > 0) {
@@ -295,7 +297,9 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     }
 
     await sendProgress(message, progressMessage("profile", language));
-    const profile = await extractWorkerProfile(text);
+    const profile = await extractWorkerProfile(text, {
+      preferredProvider: "openrouter",
+    });
     const profileMissingFields = getMissingExtractedProfileFields(profile);
 
     if (profileMissingFields.length > 0) {

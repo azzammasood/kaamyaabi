@@ -220,7 +220,10 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
     transcript,
     sendProgress: async (body) => {
       await sendWhatsAppTyping(message.id);
+      await sleep(1400);
       await sendWhatsAppText(message.from, body);
+      await sendWhatsAppTyping(message.id);
+      await sleep(700);
     },
     contact: {
       name: message.contactName,
@@ -231,6 +234,7 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
 
   for (const reply of replies) {
     await sendWhatsAppTyping(message.id);
+    await sleep(350);
 
     if (typeof reply === "string") {
       await sendWhatsAppText(message.from, reply);
@@ -238,6 +242,10 @@ async function replyToWorker(message: Extract<WhatsAppWebhookEvent, { kind: "mes
       await sendWhatsAppButtons(message.from, reply.body, reply.buttons);
     }
   }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 const globalForWatch = globalThis as typeof globalThis & {

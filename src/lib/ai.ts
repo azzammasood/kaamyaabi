@@ -93,8 +93,11 @@ export async function transcribeAudio(input: {
   }
 }
 
-export async function extractWorkerProfile(transcript: string) {
-  if (shouldUseOpenRouter()) {
+export async function extractWorkerProfile(
+  transcript: string,
+  options: { preferredProvider?: "openrouter" | "gemini" } = {},
+) {
+  if (options.preferredProvider !== "gemini" && shouldUseOpenRouter()) {
     try {
       return await extractProfileWithOpenRouter(transcript);
     } catch (error) {
