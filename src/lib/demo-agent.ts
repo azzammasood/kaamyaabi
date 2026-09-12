@@ -1,4 +1,9 @@
-import { extractWorkerProfile, getAiStatus, type WorkerProfile } from "@/lib/ai";
+import {
+  extractWorkerProfile,
+  getAiStatus,
+  getAiUsageSummary,
+  type WorkerProfile,
+} from "@/lib/ai";
 import { runJobApplicationAgent } from "@/lib/job-application-agent";
 import { runJobHuntingAgent } from "@/lib/job-hunting-agent";
 import {
@@ -92,8 +97,12 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     return [resetMessage(language)];
   }
 
-  if (["status", "usage", "ai status"].includes(normalized)) {
+  if (normalized === "status") {
     return [buildStatusMessage(language)];
+  }
+
+  if (["usage", "ai status"].includes(normalized)) {
+    return [getAiUsageSummary()];
   }
 
   if (["jobs", "find jobs", "job listings"].includes(normalized)) {

@@ -23,6 +23,7 @@ const geminiUsage = {
 };
 
 const openRouterUsage = {
+  profileAttempts: 0,
   profileCalls: 0,
   profileFailures: 0,
   promptTokens: 0,
@@ -152,6 +153,8 @@ export function getAiStatus() {
     transcribeModel +
     "\n\nOpenRouter profile calls: " +
     openRouterUsage.profileCalls +
+    "\nOpenRouter profile attempts: " +
+    openRouterUsage.profileAttempts +
     "\nOpenRouter profile failures: " +
     openRouterUsage.profileFailures +
     "\nOpenRouter tokens seen: " +
@@ -173,6 +176,47 @@ export function getAiStatus() {
     geminiUsage.profileRetries +
     "\nTranscript-only fallbacks: " +
     geminiUsage.deterministicFallbacks;
+}
+
+export function getAiUsageSummary() {
+  const openRouterModel =
+    process.env.OPENROUTER_MODEL || "nex-agi/nex-n2.5-mini:free";
+  const openRouterFallbackModel =
+    process.env.OPENROUTER_FALLBACK_MODEL || "nex-agi/nex-n2.5-pro:free";
+  const geminiModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+  const transcribeModel =
+    process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-transcribe";
+  const primary =
+    shouldUseOpenRouter() ? "OpenRouter first, Gemini fallback" : "Gemini only";
+  const effectiveProfileAi =
+    openRouterUsage.profileCalls > 0
+      ? "OpenRouter"
+      : geminiUsage.profileCalls > 0
+        ? "Gemini fallback"
+        : geminiUsage.deterministicFallbacks > 0
+          ? "Transcript parser fallback"
+          : "No completed profile call yet";
+
+  return `AI usage since server start:
+
+Mode: ${primary}
+Actually used for profile: ${effectiveProfileAi}
+Voice transcription: Gemini (${transcribeModel})
+
+OpenRouter:
+Model: ${openRouterModel}
+Fallback model: ${openRouterFallbackModel}
+Attempts: ${openRouterUsage.profileAttempts}
+Successes: ${openRouterUsage.profileCalls}
+Failures: ${openRouterUsage.profileFailures}
+Tokens seen: ${openRouterUsage.totalTokens}
+
+Gemini:
+Profile model: ${geminiModel}
+Profile calls: ${geminiUsage.profileCalls}
+Profile failures: ${geminiUsage.profileFailures}
+Voice transcription calls: ${geminiUsage.transcriptionCalls}
+Transcript parser fallbacks: ${geminiUsage.deterministicFallbacks}`;
 }
 
 function shouldUseOpenRouter() {
@@ -209,6 +253,8 @@ async function requestOpenRouterProfile(input: {
   model: string;
   transcript: string;
 }) {
+  openRouterUsage.profileAttempts += 1;
+
   const response = await fetch(input.baseUrl + "/chat/completions", {
     method: "POST",
     headers: {
