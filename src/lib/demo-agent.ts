@@ -9,10 +9,15 @@ import {
 } from "@/lib/jobs";
 
 type Session = {
+  applications?: Array<{
+    jobId: string;
+    jobTitle: string;
+    submittedAt: string;
+  }>;
   jobs?: JobListing[];
   profile?: WorkerProfile;
   selectedJob?: JobListing;
-  stage: "new" | "profile_review" | "jobs_shown" | "offer_made" | "confirmed";
+  stage: "new" | "profile_review" | "jobs_shown" | "application_ready" | "applied";
 };
 
 export type WorkerMessage = {
@@ -66,13 +71,30 @@ export async function handleWorkerMessage(message: WorkerMessage) {
     ];
   }
 
-  if (normalized === "confirm" && session.stage === "offer_made") {
-    session.stage = "confirmed";
+  if (["done", "submitted"].includes(normalized) && session.stage === "application_ready") {
+    if (session.selectedJob) {
+      session.applications = [
+        ...(session.applications ?? []),
+        {
+          jobId: session.selectedJob.id,
+          jobTitle: session.selectedJob.title,
+          submittedAt: new Date().toISOString(),
+        },
+      ];
+    }
+
+    session.stage = "applied";
     sessions.set(message.from, session);
 
     return [
-      "Confirmed. I told the employer you will start Monday at 9 AM.\n\nI will ask them for exact address and contact person.",
-      "Watcher also ready. Send: WATCH driver G-9 50000\nand I will keep looking for better verified jobs.",
+      "Application marked submitted.\n\nIf the employer replies or asks questions, paste their message here and I will help you respond.",
+      "You can also send WATCH driver G-9 50000 and I will keep checking for better live listings.",
+    ];
+  }
+
+  if (normalized === "confirm" && session.stage === "application_ready") {
+    return [
+      "To keep this real, I cannot confirm submission until you apply on the listing or contact the employer.\n\nOpen the listing/contact from the application packet, submit it, then reply DONE.",
     ];
   }
 
@@ -88,8 +110,7 @@ export async function handleWorkerMessage(message: WorkerMessage) {
 
   if (normalized.startsWith("watch")) {
     return [
-      "Done. I will keep watching for verified driver jobs near G-9 above PKR 50,000.",
-      "Demo alert: New match found: Office Driver in G-8, PKR 50,000, verified employer.\nWant me to apply? Reply APPLY.",
+      "Watcher noted for this session. Send JOBS anytime and I will fetch the latest live listings again.",
     ];
   }
 
@@ -174,6 +195,8 @@ function isKnownShortCommand(normalized: string) {
     "no",
     "apply",
     "confirm",
+    "done",
+    "submitted",
     "jobs",
     "find jobs",
     "job listings",
@@ -307,13 +330,13 @@ function beginApplication(phone: string, session: Session, text: string) {
     ];
   }
 
-  session.stage = "offer_made";
+  session.stage = "application_ready";
   session.selectedJob = job;
   sessions.set(phone, session);
 
   const application = formatApplicationSummary(job, session.profile);
 
-  return [application.started, application.offer];
+  return [application.started, application.offer].filter(Boolean);
 }
 
 function buildStatusMessage() {
@@ -328,6 +351,14 @@ Exa live calls: ${jobStatus.liveCalls}
 Exa failures: ${jobStatus.liveFailures}
 Exa cost seen: $${jobStatus.liveCostDollars.toFixed(4)}
 Last live search: ${jobStatus.lastSearchAt ?? "none"}
-Last Exa error: ${jobStatus.lastError ?? "none"}`,
+Last Exa error: ${jobStatus.lastError ?? "none"}
+Applications marked submitted: ${countSubmittedApplications()}`,
   ].join("\n\n");
+}
+
+function countSubmittedApplications() {
+  return Array.from(sessions.values()).reduce(
+    (total, session) => total + (session.applications?.length ?? 0),
+    0,
+  );
 }

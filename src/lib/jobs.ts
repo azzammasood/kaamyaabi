@@ -4,6 +4,8 @@ export type JobListing = {
   id: string;
   title: string;
   employer: string;
+  applicationMethod: "external_link" | "contact" | "unavailable";
+  contactHint?: string;
   location: string;
   salaryPkr: number | null;
   match: number;
@@ -34,6 +36,7 @@ const seededJobs: JobListing[] = [
     id: "family-driver-g10",
     title: "Family Driver",
     employer: "Khan Family",
+    applicationMethod: "unavailable",
     location: "G-10 Islamabad",
     salaryPkr: 38000,
     match: 92,
@@ -45,6 +48,7 @@ const seededJobs: JobListing[] = [
     id: "office-driver-f8",
     title: "Office Driver",
     employer: "Blue Area Office",
+    applicationMethod: "unavailable",
     location: "F-8 Islamabad",
     salaryPkr: 45000,
     match: 81,
@@ -56,6 +60,7 @@ const seededJobs: JobListing[] = [
     id: "delivery-driver-g11",
     title: "Delivery Driver",
     employer: "Local Delivery Co.",
+    applicationMethod: "unavailable",
     location: "G-11 Islamabad",
     salaryPkr: 35000,
     match: 64,
@@ -130,38 +135,76 @@ export function getJobBySelection(jobs: JobListing[] | undefined, text: string) 
 }
 
 export function formatApplicationSummary(job: JobListing, profile: WorkerProfile) {
-  const targetSalary = Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0, 45000);
+  const targetSalary = Math.max(profile.minimumSalaryPkr, job.salaryPkr ?? 0);
+  const salaryAsk = `PKR ${targetSalary.toLocaleString("en-PK")}`;
+  const applicationMessage = buildApplicationMessage(job, profile, salaryAsk);
+
+  if (job.applicationMethod === "unavailable") {
+    return {
+      targetSalary,
+      started: `This match is a demo fallback, not a real external listing.
+
+I will not pretend to apply to it. Send JOBS again and choose a live listing with APPLY 1, APPLY 2, or APPLY 3.`,
+      offer: "",
+    };
+  }
+
+  const actionLine =
+    job.applicationMethod === "contact" && job.contactHint
+      ? `Contact/apply here: ${job.contactHint}`
+      : `Open the real listing and apply here: ${job.url}`;
 
   return {
     targetSalary,
-    started: `Application packet ready
+    started: `Real application packet ready
 
 ${formatJobCard(job, 1)}
 
-Worker summary:
+Worker CV:
 ${profile.name} - ${profile.role}
 ${profile.experienceYears} years experience
+Skills: ${profile.skills.join(", ")}
+Location: ${profile.location}
 Available: ${profile.availability}
 Minimum salary: PKR ${profile.minimumSalaryPkr.toLocaleString("en-PK")}
 
-Consent recorded. I will represent you and negotiate within your limits.`,
-    offer: `Application status: outreach started
+${actionLine}`,
+    offer: `Send/apply with this message:
 
-Employer simulation:
-Posted salary: ${formatSalary(job.salaryPkr)}
-My ask: PKR ${targetSalary.toLocaleString("en-PK")}
+${applicationMessage}
 
-I highlighted your ${profile.experienceYears} years experience, nearby location, and availability.
+After you submit or message the employer, reply DONE.
 
-Good news: final offer is PKR ${targetSalary.toLocaleString("en-PK")}, Monday start, Sunday off.
-
-Should I confirm?
-Reply CONFIRM.`,
+If the site asks extra questions, copy them here and I will help answer.`,
   };
+}
+
+function buildApplicationMessage(
+  job: JobListing,
+  profile: WorkerProfile,
+  salaryAsk: string,
+) {
+  return `Assalamualaikum, I am applying for ${job.title}.
+
+Name: ${profile.name}
+Role: ${profile.role}
+Experience: ${profile.experienceYears} years
+Area: ${profile.location}
+Skills: ${profile.skills.join(", ")}
+Availability: ${profile.availability}
+Expected salary: ${salaryAsk}
+
+I am interested in this job and available to discuss details.`;
 }
 
 function formatJobCard(job: JobListing, index: number) {
   const linkLine = job.url ? `\nOpen listing: ${job.url}` : "";
+  const applyLine =
+    job.applicationMethod === "contact" && job.contactHint
+      ? `\nApply/contact: ${job.contactHint}`
+      : job.applicationMethod === "external_link" && job.url
+        ? `\nApply via listing link`
+        : "\nApplication route: not available for this demo fallback";
 
   return `*${index}. ${job.title}*
 ${job.employer} | ${job.location}
@@ -170,7 +213,7 @@ Salary: ${formatSalary(job.salaryPkr)}
 Match: ${job.match}%
 Source: ${job.source === "live" ? "Live web listing" : "Demo verified listing"}
 
-${job.summary}
+${job.summary}${applyLine}
 
 Fit: ${job.why.join("; ")}${linkLine}`;
 }
@@ -243,12 +286,15 @@ function normalizeExaResult(
   const salaryPkr = extractSalary(`${title} ${body}`);
   const location = extractLocation(`${title} ${body}`) || profile.location;
   const employer = extractEmployer(`${title} ${body}`, result.url);
+  const contactHint = extractContact(`${title} ${body}`);
   const match = Math.max(72, 88 - index * 6 + (salaryPkr ? 4 : 0));
 
   return {
     id: result.id || result.url,
     title: simplifyTitle(`${title} ${body}`, profile.role),
     employer,
+    applicationMethod: contactHint ? "contact" : "external_link",
+    contactHint,
     location,
     salaryPkr,
     match,
@@ -394,4 +440,12 @@ function extractSalary(text: string) {
   }
 
   return number < 1000 ? number * 1000 : number;
+}
+
+function extractContact(text: string) {
+  return (
+    text.match(/\+?\d[\d\s().-]{8,}\d/)?.[0]?.trim() ||
+    text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.trim() ||
+    undefined
+  );
 }
