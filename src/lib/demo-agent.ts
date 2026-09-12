@@ -128,7 +128,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     ];
   }
 
-  if (["no", "n", "edit"].includes(normalized) && session.stage === "profile_review") {
+  if (isProfileNoCommand(normalized) && session.stage === "profile_review") {
     return [editProfileMessage(language)];
   }
 
@@ -203,7 +203,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     return [watchNeedsProfileMessage(language)];
   }
 
-  if (["yes", "y"].includes(normalized) && session.profile) {
+  if (isProfileYesCommand(normalized) && session.profile) {
     session.stage = "jobs_shown";
     sessions.set(message.from, session);
 
@@ -246,7 +246,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
 
     return [
       voiceTranscriptMessage(transcript, language),
-      buildProfileReview(profile, language, session.contact ?? { phone: message.from }),
+      buildProfileReviewReply(profile, language, session.contact ?? { phone: message.from }),
     ];
   }
 
@@ -270,7 +270,7 @@ export async function handleWorkerMessage(message: WorkerMessage): Promise<Agent
     session.stage = "profile_review";
     sessions.set(message.from, session);
 
-    return [buildProfileReview(profile, language, session.contact ?? { phone: message.from })];
+    return [buildProfileReviewReply(profile, language, session.contact ?? { phone: message.from })];
   }
 
   return [introMessage(language)];
@@ -341,8 +341,11 @@ function isKnownShortCommand(normalized: string) {
     "hey",
     "yes",
     "y",
+    "profile_yes",
     "no",
     "reject",
+    "profile_no",
+    "edit",
     "apply",
     "approve",
     "confirm",
@@ -386,6 +389,14 @@ function isApplyCommand(normalized: string) {
 
 function isRejectCommand(normalized: string) {
   return /^(reject|skip|no)([\s_]+[1-3])?$/.test(normalized);
+}
+
+function isProfileYesCommand(normalized: string) {
+  return ["yes", "y", "profile_yes"].includes(normalized);
+}
+
+function isProfileNoCommand(normalized: string) {
+  return ["no", "n", "edit", "profile_no"].includes(normalized);
 }
 
 function isDirectContactCommand(normalized: string) {
@@ -551,6 +562,24 @@ Available: ${profile.availability}
 ${trustLine}
 
 Is this correct? Reply YES.`;
+}
+
+function buildProfileReviewReply(
+  profile: WorkerProfile,
+  language: LanguageCode,
+  contact?: ApplicantContact,
+): AgentReply {
+  const yesTitle = language === "pashto" ? "Yes" : language === "urdu" ? "Yes" : "Yes";
+  const noTitle = language === "pashto" ? "No" : language === "urdu" ? "No" : "No";
+
+  return {
+    kind: "buttons",
+    body: buildProfileReview(profile, language, contact),
+    buttons: [
+      { id: "PROFILE_YES", title: yesTitle },
+      { id: "PROFILE_NO", title: noTitle },
+    ],
+  };
 }
 
 function buildCvMessage(profile: WorkerProfile, language: LanguageCode) {
